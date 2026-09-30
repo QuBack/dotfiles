@@ -1,0 +1,21 @@
+# Downloaded installers, operation logs, and local test files
+downloads/
+logs/
+tests/tmp-*/
+.local-state/
+*.exe
+*.msi
+*.msix
+*.msixbundle
+*.appx
+*.appxbundle
+*.tgz
+*.log
+# Credentials and local settings
+.env
+.env.*
+!.env.example
+auth.json
+credentials.json
+*.key
+*.pem
