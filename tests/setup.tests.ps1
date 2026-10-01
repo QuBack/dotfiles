@@ -5,6 +5,9 @@ $originalDownload = (Get-Command Download-App).ScriptBlock
 $originalInstall = (Get-Command Install-App).ScriptBlock
 $originalRuntimeReady = (Get-Command Test-NpmRuntimeReady).ScriptBlock
 $originalHardware = (Get-Command Get-NvidiaHardware).ScriptBlock
+$originalTestInstalled = (Get-Command Test-AppInstalled).ScriptBlock
+$originalUpdatePath = (Get-Command Update-SessionPath).ScriptBlock
+$originalLocalAppData = $env:LOCALAPPDATA
 $script:passed = 0
 function Assert($Condition, $Message) {
     if (-not $Condition) { throw "FAIL: $Message" }
@@ -17,6 +20,34 @@ try {
     $script:installed = @{}
     function Get-NvidiaHardware { return [pscustomobject]@{Detected=$false; Names=@(); Versions=@()} }
     function Test-AppInstalled($App) { return $script:installed.ContainsKey($App.Key) }
+
+    # Menu input returns an explicit action without running installers.
+    $selected = @{}
+    $inputResult = Get-MenuKeyResult 'Enter' 1 $selected
+    Assert ($inputResult.Action -eq 'None' -and $inputResult.Keys.Count -eq 0 -and $inputResult.Notice) 'empty selection cannot start an installation'
+    $inputResult = Get-MenuKeyResult 'Enter' 2 $selected
+    Assert ($selected.ContainsKey('git') -and $inputResult.Action -eq 'None') 'Enter on a program selects it without installing'
+    Get-MenuKeyResult 'Spacebar' 2 $selected | Out-Null
+    Assert ($selected.Count -eq 0) 'Space toggles a selected program off'
+    $claudeRow = 2 + [array]::IndexOf(@($script:Catalog.Key), 'claude')
+    Get-MenuKeyResult 'Spacebar' $claudeRow $selected | Out-Null
+    Get-MenuKeyResult 'Enter' 2 $selected | Out-Null
+    $inputResult = Get-MenuKeyResult 'Enter' 1 $selected
+    Assert ($inputResult.Action -eq 'Install' -and ($inputResult.Keys -join ',') -eq 'git,claude') 'selected action includes only checked programs in catalog order'
+    $inputResult = Get-MenuKeyResult 'Enter' 0 @{}
+    Assert ($inputResult.Action -eq 'Install' -and ($inputResult.Keys -join ',') -eq ($script:Catalog.Key -join ',')) 'install all ignores checkbox selection'
+    $inputResult = Get-MenuKeyResult 'Spacebar' 0 $selected
+    Assert ($inputResult.Action -eq 'None' -and $selected.Count -eq 2) 'Space on an action cannot trigger installation'
+    $exitRow = $script:Catalog.Count + 2
+    Assert ((Get-MenuKeyResult 'UpArrow' 0 $selected).Cursor -eq $exitRow) 'Up wraps from first action to Exit'
+    Assert ((Get-MenuKeyResult 'DownArrow' $exitRow $selected).Cursor -eq 0) 'Down wraps from Exit to first action'
+    Assert ((Get-MenuKeyResult 'DownArrow' 1 $selected).Cursor -eq 2) 'navigation moves from actions to programs'
+    Assert ((Get-MenuKeyResult 'Enter' $exitRow $selected).Action -eq 'Exit') 'Exit row exits on Enter'
+    Assert ((Get-MenuKeyResult 'Escape' $claudeRow $selected).Action -eq 'Exit') 'Escape exits from the program list'
+    $unsafeInputs = @('D','I','A','P','R','O','S','Q','LeftArrow','RightArrow')
+    $unexpectedActions = @($unsafeInputs | ForEach-Object { Get-MenuKeyResult $_ 0 $selected } | Where-Object Action -ne 'None')
+    Assert ($unexpectedActions.Count -eq 0 -and $selected.Count -eq 2) 'removed shortcuts cannot trigger actions or change selection'
+
     $plan = @(Get-InstallPlan @('codex'))
     Assert (($plan.Key -join ',') -eq 'node,codex') 'dependency precedes Codex'
     $plan = @(Get-InstallPlan @('claude'))
@@ -152,8 +183,178 @@ try {
     $script:nativeCalls = @()
     & $originalInstall (Get-App 'vlc')
     Assert ($script:nativeCalls[0].Arguments[0] -eq 'install' -and $script:nativeCalls[0].Arguments[2] -eq 'VideoLAN.VLC') 'VLC installed through official winget package'
+
+    Assert ((Get-App 'terminal').Id -eq 'Microsoft.WindowsTerminal') 'Terminal uses stable official package'
+    Assert ((Get-App 'powershell-preview').Id -eq 'Microsoft.PowerShell.Preview') 'PowerShell uses official Preview channel'
+    foreach ($key in @('terminal','powershell-preview')) {
+        $script:nativeCalls = @()
+        & $originalInstall (Get-App $key)
+        $call = $script:nativeCalls[0]
+        Assert ($call.File -eq 'winget.exe' -and $call.Arguments[0] -eq 'install' -and $call.Arguments[2] -eq (Get-App $key).Id -and $call.Arguments -contains '--exact' -and $call.Arguments -contains '--no-upgrade' -and $call.Arguments -notcontains '--version') "$key installation uses exact package without pinning a version"
+    }
+
+    # Test actual detection: pwsh alone must not mark Preview as installed.
+    $script:mockRegistryNames = @('PowerShell 7.6.0.0-x64')
+    function Get-InstalledAppNames { return $script:mockRegistryNames }
+    function Find-SetupCommand($Name) { return [pscustomobject]@{Source=$Name} }
+    $script:appxCalls = 0
+    $script:appxError = $false
+    $script:mockAppxNames = @('Microsoft.WindowsTerminal','Microsoft.PowerShell')
+    function Get-AppxPackage {
+        $script:appxCalls++
+        if ($script:appxError) { throw 'simulated Appx unavailable' }
+        foreach ($name in $script:mockAppxNames) { [pscustomobject]@{Name=$name} }
+    }
+    $script:InstalledAppxNames = $null
+    Assert (& $originalTestInstalled (Get-App 'terminal')) 'Store Terminal detected by exact MSIX identity'
+    Assert (-not (& $originalTestInstalled (Get-App 'powershell-preview'))) 'stable PowerShell and pwsh command do not satisfy Preview'
+    Assert ($script:appxCalls -eq 1) 'MSIX inventory reused between app status checks'
+    $script:mockRegistryNames = @()
+    $script:mockAppxNames = @('Microsoft.WindowsTerminalPreview','Microsoft.PowerShellPreview')
+    $script:InstalledAppxNames = $null
+    Assert (-not (& $originalTestInstalled (Get-App 'terminal'))) 'Terminal Preview does not satisfy stable Terminal'
+    Assert (& $originalTestInstalled (Get-App 'powershell-preview')) 'PowerShell Preview detected by exact MSIX identity'
+    $script:appxError = $true
+    $script:InstalledAppxNames = $null
+    $script:mockRegistryNames = @('PowerShell 7.7.0-preview.3-x64')
+    Assert (& $originalTestInstalled (Get-App 'powershell-preview')) 'Preview MSI detected when Appx inventory unavailable'
+    $script:mockRegistryNames = @('PowerShell 7-preview-x64')
+    Assert (& $originalTestInstalled (Get-App 'powershell-preview')) 'Preview MSI display name without version detected'
+    & $originalUpdatePath
+    Assert ($null -eq $script:InstalledAppxNames) 'PATH refresh invalidates MSIX status cache after installation'
+    $script:Apps = @('terminal,powershell-preview')
+    $script:DryRun = $true
+    $script:nativeCalls = @()
+    Assert ((Invoke-SetupMain) -eq 0 -and $script:nativeCalls.Count -eq 0) 'File launcher accepts comma-separated app selection without running installers in DryRun'
+
+    $script:nativeCalls = @()
+    & $originalInstall (Get-App 'chrome')
+    Assert ($script:nativeCalls[0].Arguments[2] -eq 'Google.Chrome') 'Chrome uses official stable winget package'
+    $script:mockRegistryNames = @('Google Chrome Beta')
+    function Find-SetupCommand($Name) { return $null }
+    Assert (-not (& $originalTestInstalled (Get-App 'chrome'))) 'Chrome Beta does not satisfy stable Chrome'
+    $script:mockRegistryNames = @('Google Chrome')
+    Assert (& $originalTestInstalled (Get-App 'chrome')) 'Chrome detected through Windows installed applications'
+
+    # JSONC edits preserve all text outside the requested root startup fields.
+    $jsonc = @'
+{
+    // Keep this comment and the URL below.
+    "defaultProfile": "old",
+    "profiles": {"list": [{"name": "User", "guid": "custom", "defaultProfile": "nested"}]},
+    "theme": "light",
+    "url": "https://example.com/a//b/*c*/",
+    "startupActions": "new-tab -p cmd",
+    "firstWindowPreference": "persistedWindowLayout",
+}
+'@
+    $updated = Set-JsoncStringProperty $jsonc 'defaultProfile' 'new'
+    $parsed = (ConvertFrom-SetupJsonc $updated).Settings
+    Assert ($parsed.defaultProfile -eq 'new' -and $parsed.profiles.list[0].defaultProfile -eq 'nested') 'only root defaultProfile changes'
+    Assert ($updated.Contains('// Keep this comment') -and $parsed.url -eq 'https://example.com/a//b/*c*/' -and $parsed.theme -eq 'light') 'JSONC comments, URL strings and unrelated settings preserved'
+    Assert ((Set-JsoncStringProperty $updated 'defaultProfile' 'new') -ceq $updated) 'JSONC update is idempotent'
+    Assert ((ConvertFrom-SetupJsonc (Set-JsoncStringProperty '{/*empty*/}' 'defaultProfile' 'new')).Settings.defaultProfile -eq 'new') 'property inserted into empty commented settings'
+    Assert ((ConvertFrom-SetupJsonc (Set-JsoncStringProperty '{"theme":"dark",}' 'defaultProfile' 'new')).Settings.theme -eq 'dark') 'property inserted into settings with trailing comma'
+    $thrown = $false
+    try { Set-JsoncStringProperty '{bad json}' 'defaultProfile' 'new' | Out-Null } catch { $thrown = $true }
+    Assert $thrown 'invalid Terminal settings rejected before writing'
+    $thrown = $false
+    try { Set-JsoncStringProperty '{"defaultProfile":"a","defaultProfile":"b"}' 'defaultProfile' 'new' | Out-Null } catch { $thrown = $true }
+    Assert $thrown 'duplicate startup properties rejected'
+    Assert (Test-TerminalDefaultSupported 22000 0) 'Windows 11 supports terminal delegation'
+    Assert (-not (Test-TerminalDefaultSupported 19045 3030) -and (Test-TerminalDefaultSupported 19045 3031)) 'Windows 10 delegation requires the supported update'
+
+    # Run file configuration against a fake user profile, never real settings.
+    $env:LOCALAPPDATA = Join-Path $testRoot 'user-profile'
+    $shell = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\Microsoft.PowerShellPreview_8wekyb3d8bbwe\pwsh.exe'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $shell) -Force | Out-Null
+    [IO.File]::WriteAllText($shell, 'fake executable, never run')
+    Assert ((Get-PowerShellPreviewPath) -eq $shell) 'Preview profile resolves package-specific alias'
+    $settingsPath = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $settingsPath) -Force | Out-Null
+    [IO.File]::WriteAllText($settingsPath, $jsonc)
+    $script:LogFile = $null
+    Set-TerminalPowerShellProfile
+    $configuredText = [IO.File]::ReadAllText($settingsPath)
+    $configured = (ConvertFrom-SetupJsonc $configuredText).Settings
+    $fragmentPath = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\Fragments\DotfilesSetup\powershell-preview.json'
+    $fragment = Get-Content -LiteralPath $fragmentPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert ($configured.defaultProfile -eq $fragment.profiles[0].guid -and $fragment.profiles[0].commandline -eq ('"' + $shell + '"')) 'default profile references an explicit Preview fragment'
+    Assert ($configured.firstWindowPreference -eq 'defaultProfile' -and $configured.startupActions -eq '') 'startup opens default profile instead of previous layout or actions'
+    Assert ($configured.profiles.list[0].name -eq 'User' -and $configuredText.Contains('// Keep this comment')) 'existing Terminal profiles and comments survive file configuration'
+    $backups = @(Get-ChildItem -LiteralPath (Join-Path $testRoot 'backups') -Filter '*.bak')
+    Assert ($backups.Count -eq 1 -and [IO.File]::ReadAllText($backups[0].FullName) -ceq $jsonc) 'original Terminal settings backed up before changes'
+    Set-TerminalPowerShellProfile
+    Assert (@(Get-ChildItem -LiteralPath (Join-Path $testRoot 'backups') -Filter '*.bak').Count -eq 1) 'unchanged rerun creates no additional file backups'
+    [IO.File]::WriteAllText($settingsPath, '{broken}')
+    $thrown = $false
+    try { Set-TerminalPowerShellProfile } catch { $thrown = $true }
+    Assert ($thrown -and [IO.File]::ReadAllText($settingsPath) -ceq '{broken}') 'invalid settings left untouched'
+    Remove-Item -LiteralPath $settingsPath
+    Set-TerminalPowerShellProfile
+    Assert ((ConvertFrom-SetupJsonc ([IO.File]::ReadAllText($settingsPath))).Settings.defaultProfile -eq $fragment.profiles[0].guid) 'profile configuration works before first Terminal launch'
+    [IO.File]::WriteAllText($settingsPath, '{"disabledProfileSources":["DotfilesSetup"]}')
+    $thrown = $false
+    try { Set-TerminalPowerShellProfile } catch { $thrown = $true }
+    Assert $thrown 'disabled fragment source reported instead of false success'
+    [IO.File]::WriteAllText($settingsPath, $configuredText)
+
+    # Registry writes are replaced with an in-memory boundary mock.
+    $script:delegation = @{DelegationConsole='old-console'; DelegationTerminal=$null}
+    $script:registryWrites = @()
+    $script:failDelegationWrite = $false
+    function Get-TerminalDelegation {
+        return [pscustomobject]@{Path='HKCU:\Console\%%Startup'; DelegationConsole=$script:delegation.DelegationConsole; DelegationTerminal=$script:delegation.DelegationTerminal}
+    }
+    function Set-TerminalDelegationValue($Name, $Value) {
+        $script:registryWrites += $Name
+        if ($Name -eq 'DelegationTerminal' -and $script:failDelegationWrite) {
+            $script:failDelegationWrite = $false
+            throw 'simulated registry write failure'
+        }
+        $script:delegation[$Name] = $Value
+    }
+    Set-WindowsTerminalDefault
+    Assert ($script:delegation.DelegationConsole -eq '{2EACA947-7F5F-4CFA-BA87-8F7FBEEFBE69}' -and $script:delegation.DelegationTerminal -eq '{E12CFF52-A866-4C77-9A90-F570A7AA2C6B}') 'both stable Terminal delegation values written'
+    $delegationBackup = Get-ChildItem -LiteralPath (Join-Path $testRoot 'backups') -Filter 'terminal-delegation-*.json' | Select-Object -First 1
+    $saved = Get-Content -LiteralPath $delegationBackup.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert ($saved.DelegationConsole -eq 'old-console' -and $null -eq $saved.DelegationTerminal) 'previous delegation values including absence backed up'
+    $script:registryWrites = @()
+    Set-WindowsTerminalDefault
+    Assert ($script:registryWrites.Count -eq 0) 'correct terminal default not rewritten on rerun'
+    $script:delegation = @{DelegationConsole='restore-console'; DelegationTerminal='restore-terminal'}
+    $script:failDelegationWrite = $true
+    $thrown = $false
+    try { Set-WindowsTerminalDefault } catch { $thrown = $true }
+    Assert ($thrown -and $script:delegation.DelegationConsole -eq 'restore-console' -and $script:delegation.DelegationTerminal -eq 'restore-terminal') 'partial registry failure restores both previous values'
+
+    function Get-TerminalDefaultSupport { return $true }
+    $script:installed = @{terminal=$true; 'powershell-preview'=$true}
+    $script:DryRun = $false
+    function Install-App($App) { throw 'already installed apps must be skipped' }
+    $result = @(Invoke-SetupAction @('terminal','powershell-preview') 'Install')
+    Assert (($result.Status -join ',') -eq 'Skipped,Skipped,OK,OK') 'defaults configured even when both apps already installed'
+    function Get-TerminalDefaultSupport { return $false }
+    $script:registryWrites = @()
+    $result = @(Invoke-TerminalDefaults @('terminal'))
+    Assert ($result[0].Status -eq 'Manual' -and $result[1].Status -eq 'OK' -and $script:registryWrites.Count -eq 0) 'unsupported Windows reports manual delegation while profile setup remains available'
+    $script:installed.Remove('powershell-preview')
+    $result = @(Invoke-TerminalDefaults @('powershell-preview'))
+    Assert ($result[0].Status -eq 'Error') 'missing Preview cannot report successful profile configuration'
+    function Set-WindowsTerminalDefault { throw 'must not mutate during preview or download' }
+    function Set-TerminalPowerShellProfile { throw 'must not mutate during preview or download' }
+    $result = @(Invoke-SetupAction @('terminal','powershell-preview') 'Install' -Preview)
+    Assert ($result.Count -eq 4 -and @($result | Where-Object Status -ne 'Plan').Count -eq 0) 'DryRun describes terminal defaults without mutations'
+    function Download-App($App) { }
+    $result = @(Invoke-SetupAction @('terminal','powershell-preview') 'Download')
+    Assert ($result.Count -eq 2 -and @($result | Where-Object Status -ne 'OK').Count -eq 0) 'download does not configure terminal defaults'
+    Assert (@(Invoke-TerminalDefaults @('chrome')).Count -eq 0) 'Chrome-only selection does not change terminal defaults'
+    $script:installed['powershell-preview'] = $true
+    $script:Apps = @('powershell-preview')
+    Assert ((Invoke-SetupMain) -eq 1) 'configuration failure returns error exit code even when installation is skipped'
     Write-Host "Passed: $script:passed"
 } finally {
+    $env:LOCALAPPDATA = $originalLocalAppData
     $resolvedRoot = [IO.Path]::GetFullPath($testRoot)
     $testsDirectory = [IO.Path]::GetFullPath($PSScriptRoot) + [IO.Path]::DirectorySeparatorChar
     if (-not $resolvedRoot.StartsWith($testsDirectory, [StringComparison]::OrdinalIgnoreCase)) {

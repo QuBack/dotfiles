@@ -16,10 +16,14 @@ param(
 $script:DataRoot = [IO.Path]::GetFullPath($DataDirectory)
 $script:LogFile = $null
 $script:InstalledAppNames = $null
+$script:InstalledAppxNames = $null
 $script:CommandCache = @{}
 $script:NvidiaHardware = $null
 $script:Catalog = @(
     [pscustomobject]@{Key='git'; Name='Git'; Id='Git.Git'; Kind='winget'; Commands=@('git.exe'); Pattern='^Git( version)? '; Dependencies=@()},
+    [pscustomobject]@{Key='terminal'; Name='Windows Terminal'; Id='Microsoft.WindowsTerminal'; Kind='winget'; Commands=@(); Pattern='^Windows Terminal$'; AppxName='Microsoft.WindowsTerminal'; Dependencies=@()},
+    [pscustomobject]@{Key='powershell-preview'; Name='PowerShell 7 Preview'; Id='Microsoft.PowerShell.Preview'; Kind='winget'; Commands=@(); Pattern='^PowerShell 7.*(?:preview|rc)'; AppxName='Microsoft.PowerShellPreview'; Dependencies=@()},
+    [pscustomobject]@{Key='chrome'; Name='Google Chrome'; Id='Google.Chrome'; Kind='winget'; Commands=@(); Pattern='^Google Chrome$'; Dependencies=@()},
     [pscustomobject]@{Key='vscode'; Name='VS Code'; Id='Microsoft.VisualStudioCode'; Kind='winget'; Commands=@('code.cmd'); Pattern='^Microsoft Visual Studio Code'; Dependencies=@()},
     [pscustomobject]@{Key='python'; Name='Python 3.13'; Id='Python.Python.3.13'; Kind='winget'; Commands=@(); Pattern='^Python 3\.13\.\d+ \((64-bit|32-bit|ARM64)\)$'; Dependencies=@()},
     [pscustomobject]@{Key='node'; Name='Node.js LTS'; Id='OpenJS.NodeJS.LTS'; Kind='winget'; Commands=@('node.exe'); Pattern='^Node\.js$'; Dependencies=@()},
@@ -46,6 +50,7 @@ function Update-SessionPath {
     $env:Path = $entries -join ';'
     $script:CommandCache = @{}
     $script:InstalledAppNames = $null
+    $script:InstalledAppxNames = $null
     $script:NvidiaHardware = $null
 }
 
@@ -71,8 +76,21 @@ function Get-InstalledAppNames {
     return $script:InstalledAppNames
 }
 
+function Get-InstalledAppxNames {
+    if ($null -ne $script:InstalledAppxNames) { return $script:InstalledAppxNames }
+    try {
+        # Current-user MSIX packages, including apps installed through the Store.
+        $script:InstalledAppxNames = @(Get-AppxPackage -ErrorAction Stop | ForEach-Object Name)
+    } catch {
+        # Registry detection remains available if Appx is unsupported in the host.
+        $script:InstalledAppxNames = @()
+    }
+    return $script:InstalledAppxNames
+}
+
 function Test-AppInstalled($App) {
     if ($App.Key -eq 'node') { return (Test-NpmRuntimeReady) }
+    if ($App.PSObject.Properties['AppxName'] -and (Get-InstalledAppxNames) -contains $App.AppxName) { return $true }
     foreach ($name in $App.Commands) {
         if (Find-SetupCommand $name) { return $true }
     }
@@ -284,6 +302,195 @@ function Install-App($App) {
     }
 }
 
+function ConvertFrom-SetupJsonc([string]$Text) {
+    # Keep quoted strings intact while removing JSONC comments and trailing commas.
+    $withoutComments = [regex]::Replace($Text, '"(?:\\.|[^"\\])*"|//[^\r\n]*|/\*[\s\S]*?\*/', [Text.RegularExpressions.MatchEvaluator]{
+        param($match)
+        if ($match.Value.StartsWith('"')) { return $match.Value }
+        return (' ' * $match.Length)
+    })
+    $clean = [regex]::Replace($withoutComments, '("(?:\\.|[^"\\])*")|,(?=\s*[\]}])', [Text.RegularExpressions.MatchEvaluator]{
+        param($match)
+        if ($match.Groups[1].Success) { return $match.Value }
+        return ' '
+    })
+    if (-not $clean.Trim().StartsWith('{') -or -not $clean.Trim().EndsWith('}')) { throw 'Настройки Terminal должны быть объектом JSON.' }
+    $settings = $clean | ConvertFrom-Json -ErrorAction Stop
+    return [pscustomobject]@{Settings=$settings; MaskedText=$withoutComments}
+}
+
+function Set-JsoncStringProperty([string]$Text, [string]$Name, [string]$Value) {
+    $parsed = ConvertFrom-SetupJsonc $Text
+    $tokens = [regex]::Matches($parsed.MaskedText, '"(?:\\.|[^"\\])*"|[{}\[\]:,]|[^\s{}\[\]:,]+')
+    $depth = 0
+    $target = $null
+    $propertyCount = 0
+    for ($index = 0; $index -lt $tokens.Count; $index++) {
+        $token = $tokens[$index]
+        if ($token.Value -in @('{','[')) { $depth++; continue }
+        if ($token.Value -in @('}',']')) { $depth--; continue }
+        if ($depth -eq 1 -and $token.Value.StartsWith('"') -and $tokens[$index + 1].Value -eq ':') {
+            $propertyCount++
+            if (($token.Value | ConvertFrom-Json) -eq $Name) {
+                if ($null -ne $target) { throw "Дублирующийся параметр '$Name' в настройках Terminal." }
+                $target = $tokens[$index + 2]
+                if (-not $target.Value.StartsWith('"')) { throw "Параметр '$Name' должен быть строкой." }
+            }
+        }
+    }
+    $jsonValue = ConvertTo-Json -InputObject $Value -Compress
+    if ($null -ne $target) {
+        if (($target.Value | ConvertFrom-Json) -eq $Value) { return $Text }
+        $updated = $Text.Remove($target.Index, $target.Length).Insert($target.Index, $jsonValue)
+    } else {
+        $newline = "`n"; if ($Text.Contains("`r`n")) { $newline = "`r`n" }
+        $comma = ''; if ($propertyCount -gt 0) { $comma = ',' }
+        $jsonName = ConvertTo-Json -InputObject $Name -Compress
+        $updated = $Text.Insert($tokens[0].Index + 1, ($newline + '    ' + $jsonName + ': ' + $jsonValue + $comma + $newline))
+    }
+    ConvertFrom-SetupJsonc $updated | Out-Null
+    return $updated
+}
+
+function Write-SetupConfigFile([string]$Path, [string]$Text) {
+    $exists = Test-Path -LiteralPath $Path -PathType Leaf
+    $original = $null
+    if ($exists) {
+        $original = [IO.File]::ReadAllText($Path)
+        if ($original -ceq $Text) { return }
+        $backupDirectory = Join-Path $script:DataRoot 'backups'
+        New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
+        $backup = Join-Path $backupDirectory ((Split-Path -Leaf $Path) + '-' + [guid]::NewGuid().ToString('N') + '.bak')
+        Copy-Item -LiteralPath $Path -Destination $backup -ErrorAction Stop
+        Write-SetupLog "Backup: $Path -> $backup"
+    }
+    $directory = Split-Path -Parent $Path
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    $temporary = Join-Path $directory ([guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        [IO.File]::WriteAllText($temporary, $Text, (New-Object Text.UTF8Encoding($false)))
+        if ($exists) {
+            if ([IO.File]::ReadAllText($Path) -cne $original) { throw 'Настройки изменены другим процессом. Повторите запуск после закрытия Terminal.' }
+            [IO.File]::Replace($temporary, $Path, [System.Management.Automation.Language.NullString]::Value)
+        } else { [IO.File]::Move($temporary, $Path) }
+    } finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+    }
+}
+
+function Get-PowerShellPreviewPath {
+    # Package-specific alias survives MSIX updates and never resolves to stable pwsh.
+    $candidates = @((Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\Microsoft.PowerShellPreview_8wekyb3d8bbwe\pwsh.exe'))
+    foreach ($directory in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if ($directory) { $candidates += Join-Path $directory 'PowerShell\7-preview\pwsh.exe' }
+    }
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    throw 'Не найден исполняемый файл PowerShell 7 Preview. Откройте новый терминал после установки и повторите запуск.'
+}
+
+function Set-TerminalPowerShellProfile {
+    $shellPath = Get-PowerShellPreviewPath
+    $settingsPath = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json'
+    $fragmentPath = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\Fragments\DotfilesSetup\powershell-preview.json'
+    $profileGuid = '{9294768e-46fe-4a9b-b61d-126df67bf7bc}'
+    $text = '{}'
+    if (Test-Path -LiteralPath $settingsPath -PathType Leaf) { $text = [IO.File]::ReadAllText($settingsPath) }
+    $settings = (ConvertFrom-SetupJsonc $text).Settings
+    if ($settings.disabledProfileSources -contains 'DotfilesSetup') { throw 'В настройках Terminal отключён источник профилей DotfilesSetup.' }
+    if (@($settings.profiles.list | Where-Object { $_.guid -eq $profileGuid -and $_.hidden }).Count -gt 0) {
+        throw 'Профиль DotfilesSetup скрыт в настройках Terminal. Сделайте его видимым и повторите запуск.'
+    }
+    $updated = Set-JsoncStringProperty $text 'defaultProfile' $profileGuid
+    $updated = Set-JsoncStringProperty $updated 'firstWindowPreference' 'defaultProfile'
+    $updated = Set-JsoncStringProperty $updated 'startupActions' ''
+    $fragment = [ordered]@{profiles=@([ordered]@{guid=$profileGuid; name='PowerShell 7 Preview (Dotfiles)'; commandline=('"' + $shellPath + '"'); hidden=$false})} | ConvertTo-Json -Depth 8
+    # Only our fragment and three startup fields change; existing profiles stay intact.
+    Write-SetupConfigFile $fragmentPath $fragment
+    Write-SetupConfigFile $settingsPath $updated
+}
+
+function Test-TerminalDefaultSupported([int]$Build, [int]$Revision) {
+    return ($Build -ge 22000 -or ($Build -eq 19045 -and $Revision -ge 3031))
+}
+
+function Get-TerminalDefaultSupport {
+    $version = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+    return (Test-TerminalDefaultSupported ([int]$version.CurrentBuildNumber) ([int]$version.UBR))
+}
+
+function Get-TerminalDelegation {
+    $path = 'HKCU:\Console\%%Startup'
+    $values = $null
+    if (Test-Path -LiteralPath $path) { $values = Get-ItemProperty -LiteralPath $path -ErrorAction Stop }
+    $console = $null; $terminal = $null
+    if ($values -and $values.PSObject.Properties['DelegationConsole']) { $console = $values.DelegationConsole }
+    if ($values -and $values.PSObject.Properties['DelegationTerminal']) { $terminal = $values.DelegationTerminal }
+    return [pscustomobject]@{Path=$path; DelegationConsole=$console; DelegationTerminal=$terminal}
+}
+
+function Set-TerminalDelegationValue([string]$Name, $Value) {
+    $path = 'HKCU:\Console\%%Startup'
+    if ($null -eq $Value) {
+        if (Test-Path -LiteralPath $path) { Remove-ItemProperty -LiteralPath $path -Name $Name -ErrorAction SilentlyContinue }
+    } else {
+        if (-not (Test-Path -LiteralPath $path)) { New-Item -Path $path -ErrorAction Stop | Out-Null }
+        New-ItemProperty -LiteralPath $path -Name $Name -Value $Value -PropertyType String -Force -ErrorAction Stop | Out-Null
+    }
+}
+
+function Set-WindowsTerminalDefault {
+    # Official stable Terminal CLSIDs from microsoft/terminal policies/WindowsTerminal.admx.
+    $console = '{2EACA947-7F5F-4CFA-BA87-8F7FBEEFBE69}'
+    $terminal = '{E12CFF52-A866-4C77-9A90-F570A7AA2C6B}'
+    $original = Get-TerminalDelegation
+    if ($original.DelegationConsole -eq $console -and $original.DelegationTerminal -eq $terminal) { return }
+    $backupDirectory = Join-Path $script:DataRoot 'backups'
+    New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
+    $backup = Join-Path $backupDirectory ('terminal-delegation-' + [guid]::NewGuid().ToString('N') + '.json')
+    $original | ConvertTo-Json | Set-Content -LiteralPath $backup -Encoding UTF8 -ErrorAction Stop
+    Write-SetupLog "Registry backup: $backup"
+    try {
+        Set-TerminalDelegationValue 'DelegationConsole' $console
+        Set-TerminalDelegationValue 'DelegationTerminal' $terminal
+        $current = Get-TerminalDelegation
+        if ($current.DelegationConsole -ne $console -or $current.DelegationTerminal -ne $terminal) { throw 'Не удалось проверить терминал по умолчанию.' }
+    } catch {
+        Set-TerminalDelegationValue 'DelegationConsole' $original.DelegationConsole
+        Set-TerminalDelegationValue 'DelegationTerminal' $original.DelegationTerminal
+        throw
+    }
+}
+
+function Invoke-TerminalDefaults([string[]]$Keys, [switch]$Preview) {
+    if (@($Keys | Where-Object { $_ -in @('terminal','powershell-preview') }).Count -eq 0) { return }
+    $operations = @()
+    if ($Keys -contains 'terminal') { $operations += 'terminal-default' }
+    $operations += 'terminal-profile'
+    foreach ($operation in $operations) {
+        $name = 'Стартовый профиль PowerShell'; $message = 'PowerShell 7 Preview — стартовый профиль Windows Terminal'
+        if ($operation -eq 'terminal-default') { $name = 'Терминал по умолчанию'; $message = 'Windows Terminal — терминал Windows по умолчанию' }
+        $status = 'OK'
+        if ($Preview) { $status = 'Plan' }
+        else {
+            try {
+                if (-not (Test-AppInstalled (Get-App 'terminal'))) { throw 'Не установлен Windows Terminal. Выберите terminal и powershell-preview.' }
+                if ($operation -eq 'terminal-default') {
+                    if (-not (Get-TerminalDefaultSupport)) {
+                        $status = 'Manual'; $message = 'Для терминала по умолчанию нужна Windows 11 или Windows 10 22H2 с обновлением KB5026435 либо более новым.'
+                    } else { Set-WindowsTerminalDefault }
+                } else {
+                    if (-not (Test-AppInstalled (Get-App 'powershell-preview'))) { throw 'Не установлен PowerShell 7 Preview. Выберите powershell-preview.' }
+                    Set-TerminalPowerShellProfile
+                }
+            } catch { $status = 'Error'; $message = $_.Exception.Message }
+        }
+        Write-SetupLog "$operation`: $status $message"
+        [pscustomobject]@{Key=$operation; Name=$name; Status=$status; Message=$message}
+    }
+}
+
 function Invoke-SetupAction([string[]]$Keys, [ValidateSet('Install','Download')][string]$Action, [switch]$Preview) {
     if ($Action -eq 'Install') { $plan = @(Get-InstallPlan $Keys) }
     else { $plan = @($Keys | Select-Object -Unique | ForEach-Object { Get-App $_ }) }
@@ -321,13 +528,14 @@ function Invoke-SetupAction([string[]]$Keys, [ValidateSet('Install','Download')]
         Write-SetupLog "$($app.Key): $status $message"
         [pscustomobject]@{Key=$app.Key; Name=$app.Name; Status=$status; Message=$message}
     }
+    if ($Action -eq 'Install') { Invoke-TerminalDefaults $Keys -Preview:$Preview }
 }
 
 function Show-Report($Results) {
     Write-Host "`nРезультат:" -ForegroundColor Cyan
     $Results | Format-Table Name,Status,Message -Wrap -AutoSize | Out-Host
     Write-Host 'После установки откройте новый терминал. В Codex/Claude войдите в аккаунт; в Amnezia импортируйте VPN-конфиг.'
-    if (@($Results | Where-Object Status -eq 'Manual').Count -gt 0) {
+    if (@($Results | Where-Object { $_.Key -eq 'nvidia' -and $_.Status -eq 'Manual' }).Count -gt 0) {
         Write-Host 'NVIDIA: скачивание и установка драйвера завершаются на официальном сайте. Драйвер ещё не установлен этим скриптом.' -ForegroundColor Yellow
     }
 }
@@ -338,29 +546,68 @@ function Initialize-OperationLog {
     $script:LogFile = Join-Path $logDirectory ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N') + '.log')
 }
 
-function Show-Menu([int]$Cursor, $Selected, $Statuses) {
+function Show-Menu([int]$Cursor, $Selected, $Statuses, [string]$Notice) {
     Clear-Host
     Write-Host '  DOTFILES / WINDOWS' -ForegroundColor Cyan
-    Write-Host '  Рабочие программы за один запуск' -ForegroundColor DarkGray
+    Write-Host '  Установка программ' -ForegroundColor DarkGray
+    Write-Host ''
+    $actions = @('Установить всё', ('Установить выбранное ({0})' -f $Selected.Count))
+    for ($index = 0; $index -lt $actions.Count; $index++) {
+        $pointer = ' '; if ($index -eq $Cursor) { $pointer = '>' }
+        $color = 'White'
+        if ($index -eq 1 -and $Selected.Count -eq 0) { $color = 'DarkGray' }
+        if ($index -eq $Cursor) { $color = 'Cyan' }
+        Write-Host ('  {0} {1}' -f $pointer,$actions[$index]) -ForegroundColor $color
+    }
     Write-Host ''
     for ($index = 0; $index -lt $script:Catalog.Count; $index++) {
         $app = $script:Catalog[$index]
-        $pointer = ' '; if ($index -eq $Cursor) { $pointer = '>' }
+        $pointer = ' '; if (($index + 2) -eq $Cursor) { $pointer = '>' }
         $mark = ' '; if ($Selected.ContainsKey($app.Key)) { $mark = 'x' }
-        $color = 'Gray'; if ($index -eq $Cursor) { $color = 'Cyan' }
-        Write-Host ('  {0} [{1}] {2,-18} {3}' -f $pointer,$mark,$app.Name,$Statuses[$app.Key]) -ForegroundColor $color
+        $color = 'Gray'; if (($index + 2) -eq $Cursor) { $color = 'Cyan' }
+        Write-Host ('  {0} [{1}] {2,-20} {3}' -f $pointer,$mark,$app.Name,$Statuses[$app.Key]) -ForegroundColor $color
     }
-    Write-Host ''
-    Write-Host '  Стрелки: выбор | Пробел: отметить | S: отметить/снять всё'
-    Write-Host '  D: скачать отмеченные | I: установить отмеченные | A: установить всё'
-    Write-Host '  P: показать план | R: проверить статусы | O: открыть загрузки | Q: выход'
-    Write-Host ''
-    Write-Host '  Установка через WinGet требует интернет; сохранённые файлы можно открыть вручную.' -ForegroundColor DarkGray
-    Write-Host '  Codex и Claude устанавливаются через npm; Node.js LTS подготавливается автоматически.' -ForegroundColor DarkGray
-    Write-Host '  NVIDIA: официальный подбор драйвера в браузере, установка вручную.' -ForegroundColor DarkGray
-    if (-not (Find-SetupCommand 'winget.exe')) {
-        Write-Host '  WinGet будет подготовлен при первой операции с программами Windows.' -ForegroundColor Yellow
+    $pointer = ' '; $color = 'DarkGray'
+    if ($Cursor -eq ($script:Catalog.Count + 2)) { $pointer = '>'; $color = 'Cyan' }
+    Write-Host ('  {0} Выход' -f $pointer) -ForegroundColor $color
+    Write-Host '  Стрелки: перемещение | Enter: выбрать / выполнить | Esc: выход'
+    Write-Host '  Программы можно отмечать также пробелом.' -ForegroundColor DarkGray
+    Write-Host '  Terminal + Preview: настроить запуск по умолчанию. Нужен интернет.' -ForegroundColor DarkGray
+    if ($Notice) {
+        Write-Host ('  ' + $Notice) -ForegroundColor Yellow
     }
+}
+
+function Get-MenuKeyResult([string]$Key, [int]$Cursor, $Selected) {
+    # Both action rows, the program rows and Exit share the same navigation.
+    $rowCount = $script:Catalog.Count + 3
+    $result = [pscustomobject]@{Cursor=$Cursor; Action='None'; Keys=@(); Notice=''}
+    switch ($Key) {
+        'UpArrow' { $result.Cursor = ($Cursor - 1 + $rowCount) % $rowCount }
+        'DownArrow' { $result.Cursor = ($Cursor + 1) % $rowCount }
+        'Escape' { $result.Action = 'Exit' }
+        { $_ -in @('Enter','Spacebar') } {
+            if ($Cursor -ge 2 -and $Cursor -lt ($script:Catalog.Count + 2)) {
+                $appKey = $script:Catalog[$Cursor - 2].Key
+                if ($Selected.ContainsKey($appKey)) { $Selected.Remove($appKey) }
+                else { $Selected[$appKey] = $true }
+            } elseif ($Key -eq 'Enter') {
+                if ($Cursor -eq 0) {
+                    $result.Action = 'Install'
+                    $result.Keys = @($script:Catalog.Key)
+                } elseif ($Cursor -eq 1) {
+                    $result.Keys = @($script:Catalog | Where-Object { $Selected.ContainsKey($_.Key) } | ForEach-Object Key)
+                    if ($result.Keys.Count -gt 0) { $result.Action = 'Install' }
+                    else { $result.Notice = 'Отметьте нужные программы в списке ниже.' }
+                } else { $result.Action = 'Exit' }
+            }
+        }
+    }
+    return $result
+}
+
+function Read-MenuKey {
+    return [Console]::ReadKey($true).Key.ToString()
 }
 
 function Get-MenuStatuses {
@@ -388,49 +635,33 @@ function Start-SetupMenu {
         throw 'Откройте обычный терминал для меню или используйте -All / -Apps / -List.'
     }
     $selected = @{}
-    foreach ($app in $script:Catalog) { $selected[$app.Key] = $true }
     $cursor = 0
+    $notice = ''
     $statuses = Get-MenuStatuses
     while ($true) {
-        Show-Menu $cursor $selected $statuses
-        $key = [Console]::ReadKey($true)
-        switch ($key.Key.ToString()) {
-            'UpArrow' { $cursor = ($cursor - 1 + $script:Catalog.Count) % $script:Catalog.Count }
-            'DownArrow' { $cursor = ($cursor + 1) % $script:Catalog.Count }
-            'Spacebar' {
-                $appKey = $script:Catalog[$cursor].Key
-                if ($selected.ContainsKey($appKey)) { $selected.Remove($appKey) } else { $selected[$appKey] = $true }
-            }
-            'S' {
-                if ($selected.Count -eq $script:Catalog.Count) { $selected.Clear() }
-                else { foreach ($app in $script:Catalog) { $selected[$app.Key] = $true } }
-            }
-            'Q' { return }
-            'R' { Update-SessionPath; $statuses = Get-MenuStatuses }
-            'O' {
-                $folder = Join-Path $script:DataRoot 'downloads'
-                if (Test-Path -LiteralPath $folder) { Start-Process explorer.exe -ArgumentList ('"' + $folder + '"') -WindowStyle Hidden }
-            }
-            { $_ -in @('D','I','A','P') } {
-                $keys = @($script:Catalog | Where-Object { $selected.ContainsKey($_.Key) } | ForEach-Object Key)
-                if ($key.Key.ToString() -eq 'A') { $keys = @($script:Catalog.Key) }
-                if ($keys.Count -eq 0) { continue }
-                $action = 'Install'; if ($key.Key.ToString() -eq 'D') { $action = 'Download' }
-                $preview = $key.Key.ToString() -eq 'P'
-                if (-not $preview) { Initialize-OperationLog }
-                $results = @(Invoke-SetupAction $keys $action -Preview:$preview)
-                Show-Report $results
-                if (-not $preview) { Write-Host "Журнал: $script:LogFile" }
-                Write-Host "`nНажмите любую клавишу для возврата в меню..."
-                [Console]::ReadKey($true) | Out-Null
-                $statuses = Get-MenuStatuses
-            }
+        Show-Menu $cursor $selected $statuses $notice
+        $inputResult = Get-MenuKeyResult (Read-MenuKey) $cursor $selected
+        $cursor = $inputResult.Cursor
+        $notice = $inputResult.Notice
+        if ($inputResult.Action -eq 'Exit') { return }
+        if ($inputResult.Action -eq 'Install') {
+            Clear-Host
+            Initialize-OperationLog
+            $results = @(Invoke-SetupAction $inputResult.Keys 'Install')
+            Show-Report $results
+            Write-Host "Журнал: $script:LogFile"
+            Write-Host "`nEnter — вернуться в меню..."
+            while ((Read-MenuKey) -ne 'Enter') { }
+            Update-SessionPath
+            $statuses = Get-MenuStatuses
         }
     }
 }
 
 function Invoke-SetupMain {
     if ($env:OS -ne 'Windows_NT') { throw 'Эта версия установщика поддерживает Windows.' }
+    # powershell.exe -File passes comma-separated app names as one string.
+    if ($Apps) { $Apps = @($Apps | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() }) }
     if ($All -and $Apps) { throw 'Используйте -All или -Apps, а не оба параметра.' }
     if ($List -and ($All -or $Apps -or $Download -or $DryRun)) { throw '-List используется отдельно.' }
     if (($Download -or $DryRun) -and -not ($All -or $Apps)) { throw 'Для -Download / -DryRun укажите -All или -Apps.' }
