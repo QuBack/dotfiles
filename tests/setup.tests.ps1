@@ -54,6 +54,21 @@ try {
     Assert (($plan.Key -join ',') -eq 'node,claude') 'dependency precedes Claude'
     $plan = @(Get-InstallPlan @('codex','claude'))
     Assert (($plan.Key -join ',') -eq 'node,codex,claude') 'both CLIs share one Node dependency'
+    $plan = @(Get-InstallPlan @('codex-desktop','claude-desktop','steam','chrome'))
+    Assert (($plan.Key -join ',') -eq 'codex-desktop,claude-desktop,steam,chrome') 'desktop apps, Steam and Chrome need no npm runtime'
+    $selectedVariants = @{}
+    foreach ($key in @('codex-desktop','claude-desktop')) {
+        $row = 2 + [array]::IndexOf(@($script:Catalog.Key), $key)
+        Get-MenuKeyResult 'Enter' $row $selectedVariants | Out-Null
+    }
+    $inputResult = Get-MenuKeyResult 'Enter' 1 $selectedVariants
+    Assert (($inputResult.Keys -join ',') -eq 'codex-desktop,claude-desktop') 'desktop variants can be checked without selecting CLI'
+    foreach ($key in @('codex','claude')) {
+        $row = 2 + [array]::IndexOf(@($script:Catalog.Key), $key)
+        Get-MenuKeyResult 'Spacebar' $row $selectedVariants | Out-Null
+    }
+    $inputResult = Get-MenuKeyResult 'Enter' 1 $selectedVariants
+    Assert ($inputResult.Keys.Count -eq 4 -and @($inputResult.Keys | Where-Object { $_ -in @('codex','codex-desktop','claude','claude-desktop') }).Count -eq 4) 'desktop and CLI variants can be selected together'
     $plan = @(Get-InstallPlan @('codex','node','git'))
     Assert (($plan.Key -join ',') -eq 'node,codex,git') 'dependencies are deduplicated'
     $script:installed['codex'] = $true
@@ -77,6 +92,9 @@ try {
     $result = @(Invoke-SetupAction @('codex','git') 'Install')
     Assert (($script:calls -join ',') -eq 'node,git') 'dependent install blocked; independent install continues'
     Assert (($result.Status -join ',') -eq 'Error,Blocked,OK') 'failures remain in report'
+    $script:calls = @()
+    $result = @(Invoke-SetupAction @('codex','claude','codex-desktop','claude-desktop','steam') 'Install')
+    Assert (($script:calls -join ',') -eq 'node,codex-desktop,claude-desktop,steam' -and ($result.Status -join ',') -eq 'Error,Blocked,Blocked,OK,OK,OK') 'npm dependency failure does not block desktop apps or Steam'
     $script:installed['git'] = $true
     $script:calls = @()
     $result = @(Invoke-SetupAction @('git') 'Install')
@@ -101,6 +119,21 @@ try {
     $result = @(Invoke-SetupAction @('obsidian') 'Download')
     Assert ($result[0].Status -eq 'Error') 'download failure reported'
     Assert ($null -eq (Get-CachedDownload (Get-App 'obsidian'))) 'failed download not marked cached'
+    $script:downloadCalls = @()
+    function Download-App($App) { $script:downloadCalls += $App.Key }
+    $result = @(Invoke-SetupAction @('codex-desktop','steam') 'Download')
+    Assert ($result[0].Status -eq 'Manual' -and $result[0].Message -match 'Microsoft Store' -and $result[1].Status -eq 'OK' -and ($script:downloadCalls -join ',') -eq 'steam') 'Store download explains manual step while other downloads continue'
+    Assert ($null -eq (Get-CachedDownload (Get-App 'codex-desktop'))) 'Store manual download creates no cached receipt'
+    $script:downloadCalls = @()
+    $result = @(Invoke-SetupAction @('codex-desktop') 'Download' -Preview)
+    Assert ($result[0].Status -eq 'Plan' -and $result[0].Message -match 'Microsoft Store' -and $script:downloadCalls.Count -eq 0) 'Store download preview reports limitation without downloading'
+    $script:Apps = @('codex-desktop')
+    $script:Download = $true
+    Assert ((Invoke-SetupMain) -eq 2) 'Store download returns action-required exit code'
+    function Download-App($App) { throw 'simulated network failure' }
+    $thrown = $false
+    try { & $originalDownload (Get-App 'codex-desktop') } catch { $thrown = $_.Exception.Message -match 'Microsoft Store' }
+    Assert $thrown 'direct Store download rejects unsupported operation before WinGet or network'
 
     $receipt = Get-ReceiptPath (Get-App 'git')
     [IO.File]::WriteAllText($receipt, '{bad json')
@@ -235,6 +268,36 @@ try {
     Assert (-not (& $originalTestInstalled (Get-App 'chrome'))) 'Chrome Beta does not satisfy stable Chrome'
     $script:mockRegistryNames = @('Google Chrome')
     Assert (& $originalTestInstalled (Get-App 'chrome')) 'Chrome detected through Windows installed applications'
+
+    # Desktop and CLI identities must stay independent.
+    function Find-SetupCommand($Name) { return $null }
+    $script:appxError = $false
+    $script:mockRegistryNames = @()
+    $script:mockAppxNames = @('OpenAI.Codex','Claude')
+    $script:InstalledAppxNames = $null
+    Assert ((& $originalTestInstalled (Get-App 'codex-desktop')) -and (& $originalTestInstalled (Get-App 'claude-desktop'))) 'desktop apps detected by exact MSIX identities'
+    Assert (-not (& $originalTestInstalled (Get-App 'codex')) -and -not (& $originalTestInstalled (Get-App 'claude'))) 'desktop packages do not mark CLI installed'
+    $script:mockAppxNames = @()
+    $script:InstalledAppxNames = $null
+    function Find-SetupCommand($Name) { return [pscustomobject]@{Source=$Name} }
+    Assert ((& $originalTestInstalled (Get-App 'codex')) -and (& $originalTestInstalled (Get-App 'claude'))) 'CLI detected through its own commands'
+    Assert (-not (& $originalTestInstalled (Get-App 'codex-desktop')) -and -not (& $originalTestInstalled (Get-App 'claude-desktop'))) 'CLI commands do not mark desktop apps installed'
+    function Find-SetupCommand($Name) { return $null }
+    $script:mockRegistryNames = @('Claude Code','SteamVR','Steam Game')
+    Assert (-not (& $originalTestInstalled (Get-App 'claude-desktop')) -and -not (& $originalTestInstalled (Get-App 'steam'))) 'CLI registry name and Steam-related apps do not satisfy desktop packages'
+    $script:mockRegistryNames = @('Claude','Steam')
+    Assert ((& $originalTestInstalled (Get-App 'claude-desktop')) -and (& $originalTestInstalled (Get-App 'steam'))) 'legacy Claude desktop and Steam detected through registry'
+    foreach ($entry in @(
+        @{Key='codex-desktop'; Id='9PLM9XGG6VKS'; Source='msstore'},
+        @{Key='claude-desktop'; Id='Anthropic.Claude'; Source='winget'},
+        @{Key='steam'; Id='Valve.Steam'; Source='winget'}
+    )) {
+        $script:nativeCalls = @()
+        & $originalInstall (Get-App $entry.Key)
+        $call = $script:nativeCalls[0]
+        $sourceIndex = [array]::IndexOf($call.Arguments, '--source')
+        Assert ($script:nativeCalls.Count -eq 1 -and $call.File -eq 'winget.exe' -and $call.Arguments[0] -eq 'install' -and $call.Arguments[2] -eq $entry.Id -and $sourceIndex -ge 0 -and $call.Arguments[$sourceIndex + 1] -eq $entry.Source -and $call.Arguments -contains '--exact' -and $call.Arguments -contains '--no-upgrade') "$($entry.Key) installs exact package from correct source without npm"
+    }
 
     # JSONC edits preserve all text outside the requested root startup fields.
     $jsonc = @'

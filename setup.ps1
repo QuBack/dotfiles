@@ -28,10 +28,13 @@ $script:Catalog = @(
     [pscustomobject]@{Key='python'; Name='Python 3.13'; Id='Python.Python.3.13'; Kind='winget'; Commands=@(); Pattern='^Python 3\.13\.\d+ \((64-bit|32-bit|ARM64)\)$'; Dependencies=@()},
     [pscustomobject]@{Key='node'; Name='Node.js LTS'; Id='OpenJS.NodeJS.LTS'; Kind='winget'; Commands=@('node.exe'); Pattern='^Node\.js$'; Dependencies=@()},
     [pscustomobject]@{Key='codex'; Name='Codex CLI'; Id='@openai/codex'; Kind='npm'; Commands=@('codex.cmd','codex.exe'); Pattern='(?!)'; Dependencies=@('node')},
-    [pscustomobject]@{Key='claude'; Name='Claude Code'; Id='@anthropic-ai/claude-code'; Kind='npm'; Commands=@('claude.cmd','claude.exe'); Pattern='(?!)'; Dependencies=@('node')},
+    [pscustomobject]@{Key='codex-desktop'; Name='Codex (интерфейс)'; Id='9PLM9XGG6VKS'; Kind='winget'; Source='msstore'; Commands=@(); Pattern='(?!)'; AppxName='OpenAI.Codex'; Dependencies=@()},
+    [pscustomobject]@{Key='claude'; Name='Claude Code CLI'; Id='@anthropic-ai/claude-code'; Kind='npm'; Commands=@('claude.cmd','claude.exe'); Pattern='(?!)'; Dependencies=@('node')},
+    [pscustomobject]@{Key='claude-desktop'; Name='Claude (интерфейс)'; Id='Anthropic.Claude'; Kind='winget'; Commands=@(); Pattern='^Claude( Desktop)?( \d.*)?$'; AppxName='Claude'; Dependencies=@()},
     [pscustomobject]@{Key='obsidian'; Name='Obsidian'; Id='Obsidian.Obsidian'; Kind='winget'; Commands=@(); Pattern='^Obsidian( |$)'; Dependencies=@()},
     [pscustomobject]@{Key='amnezia'; Name='AmneziaVPN'; Id='AmneziaVPN.AmneziaVPN'; Kind='winget'; Commands=@(); Pattern='^AmneziaVPN( |$)'; Dependencies=@()},
     [pscustomobject]@{Key='vlc'; Name='VLC'; Id='VideoLAN.VLC'; Kind='winget'; Commands=@('vlc.exe'); Pattern='^VLC media player( |$)'; Dependencies=@()},
+    [pscustomobject]@{Key='steam'; Name='Steam'; Id='Valve.Steam'; Kind='winget'; Commands=@(); Pattern='^Steam$'; Dependencies=@()},
     [pscustomobject]@{Key='nvidia'; Name='NVIDIA драйверы'; Id='https://www.nvidia.com/en-us/drivers/'; Kind='manual'; Commands=@(); Pattern='(?!)'; Dependencies=@()}
 )
 
@@ -39,6 +42,11 @@ function Get-App([string]$Key) {
     $app = $script:Catalog | Where-Object Key -eq $Key | Select-Object -First 1
     if ($null -eq $app) { throw "Неизвестная программа '$Key'. Доступны: $($script:Catalog.Key -join ', ')." }
     return $app
+}
+
+function Get-WinGetSource($App) {
+    if ($App.PSObject.Properties['Source']) { return $App.Source }
+    return 'winget'
 }
 
 function Update-SessionPath {
@@ -232,6 +240,9 @@ function Get-CachedDownload($App) {
 
 function Download-App($App) {
     if ($App.Kind -eq 'manual') { throw 'Для NVIDIA используйте официальный подбор драйвера через меню.' }
+    if ($App.Kind -eq 'winget' -and (Get-WinGetSource $App) -eq 'msstore') {
+        throw 'Отдельное скачивание пакета Microsoft Store не поддерживается. Выберите установку.'
+    }
     if ($null -ne (Get-CachedDownload $App)) {
         Write-Host "$($App.Name): сохранённый установщик уже есть." -ForegroundColor Green
         return
@@ -256,7 +267,7 @@ function Download-App($App) {
         Save-DownloadReceipt $App $folder @($file)
     } else {
         Ensure-WinGet
-        Invoke-InstallerCommand 'winget.exe' @('download','--id',$App.Id,'--exact','--source','winget',
+        Invoke-InstallerCommand 'winget.exe' @('download','--id',$App.Id,'--exact','--source',(Get-WinGetSource $App),
             '--download-directory',$folder,'--skip-dependencies','--accept-package-agreements',
             '--accept-source-agreements','--disable-interactivity')
         $files = @(Get-ChildItem -LiteralPath $folder -File -Recurse | Where-Object {
@@ -289,7 +300,7 @@ function Install-App($App) {
         Invoke-InstallerCommand $cliCommand.Source @('--version')
     } else {
         Ensure-WinGet
-        $arguments = @('install','--id',$App.Id,'--exact','--source','winget',
+        $arguments = @('install','--id',$App.Id,'--exact','--source',(Get-WinGetSource $App),
             '--accept-package-agreements','--accept-source-agreements','--disable-interactivity')
         # Node may need an upgrade or repair when npm is missing or the runtime is too old.
         if ($App.Key -eq 'node') { $arguments += '--force' }
@@ -504,11 +515,16 @@ function Invoke-SetupAction([string[]]$Keys, [ValidateSet('Install','Download')]
             $status = 'Plan'
             $message = "$Action $($app.Id)"
             if ($app.Kind -eq 'manual') { $message = 'Открыть сайт NVIDIA; выбрать и установить драйвер вручную' }
+            elseif ($Action -eq 'Download' -and $app.Kind -eq 'winget' -and (Get-WinGetSource $app) -eq 'msstore') {
+                $message = 'Отдельное скачивание Microsoft Store не поддерживается; выберите установку'
+            }
             elseif ($Action -eq 'Install' -and (Test-AppInstalled $app)) { $message = 'Уже установлено: будет пропущено' }
         } elseif ($Action -eq 'Install' -and (Test-AppInstalled $app)) {
             $status = 'Skipped'; $message = 'Уже установлено'
         } elseif ($Action -eq 'Install' -and @($app.Dependencies | Where-Object { $failed.ContainsKey($_) }).Count -gt 0) {
             $status = 'Blocked'; $message = 'Не удалось установить зависимость'; $failed[$app.Key] = $true
+        } elseif ($Action -eq 'Download' -and $app.Kind -eq 'winget' -and (Get-WinGetSource $app) -eq 'msstore') {
+            $status = 'Manual'; $message = 'Отдельное скачивание Microsoft Store не поддерживается; выберите установку'
         } else {
             Write-Host "`n>>> $Action : $($app.Name)" -ForegroundColor Cyan
             try {
@@ -535,6 +551,9 @@ function Show-Report($Results) {
     Write-Host "`nРезультат:" -ForegroundColor Cyan
     $Results | Format-Table Name,Status,Message -Wrap -AutoSize | Out-Host
     Write-Host 'После установки откройте новый терминал. В Codex/Claude войдите в аккаунт; в Amnezia импортируйте VPN-конфиг.'
+    if (@($Results | Where-Object { $_.Key -in @('codex-desktop','claude-desktop') }).Count -gt 0) {
+        Write-Host 'Приложения: откройте Codex/ChatGPT или Claude из меню «Пуск». В Claude выберите вкладку Code.'
+    }
     if (@($Results | Where-Object { $_.Key -eq 'nvidia' -and $_.Status -eq 'Manual' }).Count -gt 0) {
         Write-Host 'NVIDIA: скачивание и установка драйвера завершаются на официальном сайте. Драйвер ещё не установлен этим скриптом.' -ForegroundColor Yellow
     }

@@ -48,10 +48,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
     [ ] Python 3.13          Не установлено
     [ ] Node.js LTS          Не установлено
     [ ] Codex CLI            Не установлено
-    [ ] Claude Code          Не установлено
+    [ ] Codex (интерфейс)    Не установлено
+    [ ] Claude Code CLI      Не установлено
+    [ ] Claude (интерфейс)   Не установлено
     [ ] Obsidian             Не установлено
     [ ] AmneziaVPN           Не установлено
     [ ] VLC                  Не установлено
+    [ ] Steam                Не установлено
     [ ] NVIDIA драйверы      GTX 1660 Ti / ручной подбор
     Выход
   Стрелки: перемещение | Enter: выбрать / выполнить | Esc: выход
@@ -80,13 +83,40 @@ Enter. Изначально отметок нет; пустой выбор не 
 Их наличие проверяется по командам
 в PATH и записям установленных приложений Windows; удалённые вручную файлы
 при оставшихся записях реестра могут потребовать исправления средствами Windows.
-Для обновления программ используйте команды ниже. Codex и Claude Code
+Для обновления программ используйте команды ниже. Codex CLI и Claude Code CLI
 устанавливаются через npm. Выбор любого из них автоматически добавляет Node.js
 LTS с npm, если Node.js отсутствует, старее 22 или npm не найден. Подходящий
 Node.js с npm пропускается. При необходимости Node.js LTS обновляется или
 переустанавливается через WinGet; это может повлиять на проекты со старой версией
 Node.js. Уже установленные CLI пропускаются независимо от способа их установки.
 Ошибка подготовки Node.js блокирует оба CLI, но не мешает независимым программам.
+
+### Приложение или CLI
+
+Для Codex и Claude предусмотрены отдельные отметки «CLI» и «интерфейс».
+Можно установить любой вариант или оба одновременно. «Установить всё» включает
+оба варианта каждого инструмента, Google Chrome и Steam.
+
+| Вариант | Ключ для `-Apps` | Способ установки |
+|---|---|---|
+| Codex CLI | `codex` | npm: `@openai/codex` |
+| Codex с интерфейсом | `codex-desktop` | WinGet, источник Microsoft Store: `9PLM9XGG6VKS` |
+| Claude Code CLI | `claude` | npm: `@anthropic-ai/claude-code` |
+| Claude Code с интерфейсом | `claude-desktop` | WinGet: `Anthropic.Claude` (Claude Desktop, вкладка Code) |
+| Google Chrome | `chrome` | WinGet: `Google.Chrome` |
+| Steam | `steam` | WinGet: `Valve.Steam` |
+
+Приложения не требуют установки отдельного CLI и не добавляют Node.js/npm
+в план. Их наличие проверяется отдельно от CLI. Старые команды с ключами
+`codex` и `claude` продолжают устанавливать CLI.
+
+В актуальной [OpenAI Docs](https://learn.chatgpt.com/docs/windows/windows-app)
+приложение Codex описывается как ChatGPT desktop app; в меню установщика
+сохранено понятное обозначение «Codex (интерфейс)». После установки найдите
+Codex/ChatGPT в меню «Пуск» и войдите в аккаунт.
+Для [Claude Code в Claude Desktop](https://code.claude.com/docs/en/desktop)
+откройте вкладку Code; требуется подходящая платная подписка Claude.
+Установка программы сама по себе не предоставляет доступ к сервису.
 
 ## Без меню
 
@@ -97,11 +127,17 @@ Node.js. Уже установленные CLI пропускаются неза
 # Только нужные программы
 .\setup.ps1 -Apps codex,claude,obsidian
 
+# Codex и Claude с графическим интерфейсом
+.\setup.ps1 -Apps codex-desktop,claude-desktop
+
+# Оба интерфейса и оба CLI
+.\setup.ps1 -Apps codex,codex-desktop,claude,claude-desktop
+
 # Современный терминал и PowerShell 7 Preview
 .\setup.ps1 -Apps terminal,powershell-preview
 
-# Google Chrome
-.\setup.ps1 -Apps chrome
+# Google Chrome и Steam
+.\setup.ps1 -Apps chrome,steam
 
 # Скачать выбранные программы
 .\setup.ps1 -Apps amnezia,obsidian -Download
@@ -120,7 +156,8 @@ Node.js. Уже установленные CLI пропускаются неза
 полную команду запуска с `powershell.exe -ExecutionPolicy Bypass -File`, добавив
 те же параметры после имени файла. Автоматический режим возвращает код 0 при
 успехе, 1 при ошибке или заблокированной зависимости, 2 если требуется ручное
-действие (драйвер NVIDIA или неподдерживаемая Windows для терминала по умолчанию).
+действие (драйвер NVIDIA, отдельное скачивание приложения Microsoft Store
+или неподдерживаемая Windows для терминала по умолчанию).
 WinGet принимает лицензии
 выбранных программ, чтобы не запрашивать их в ходе каждой установки; UAC и
 особенности стороннего установщика могут потребовать участия пользователя.
@@ -141,7 +178,14 @@ WinGet принимает лицензии
 Это значит, что после `-Download` установка через WinGet может скачать пакет ещё раз.
 Офлайн-установка и скачивание всех зависимостей в этой версии не реализованы.
 
-Для Codex и Claude Code `-Download` сохраняет соответствующий официальный npm-архив и
+Для `codex-desktop` поддерживается установка через источник `msstore`.
+Отдельное скачивание через `-Download` в этом скрипте не поддерживается:
+оно возвращает `Manual` и предлагает выбрать установку, без статуса «Скачано».
+Другие выбранные загрузки продолжаются. У Microsoft Store packaged apps есть
+[ограничения авторизации при скачивании через WinGet](https://learn.microsoft.com/en-us/windows/package-manager/winget/download).
+Если компоненты Store отключены, проверьте их доступность перед установкой.
+
+Для Codex CLI и Claude Code CLI `-Download` сохраняет соответствующий официальный npm-архив и
 проверяет его SHA512 по метаданным npm. Скачивание этих архивов не требует
 установки Node.js/npm. Установка использует сохранённый архив, иначе актуальный
 `@openai/codex@latest` или `@anthropic-ai/claude-code@latest`. npm дополнительно
@@ -202,10 +246,13 @@ claude --version
 | Python 3.13 | `winget install -e --id Python.Python.3.13 --source winget` | `winget upgrade -e --id Python.Python.3.13 --source winget` |
 | Node.js LTS | `winget install -e --id OpenJS.NodeJS.LTS --source winget` | `winget upgrade -e --id OpenJS.NodeJS.LTS --source winget` |
 | Codex CLI | `npm install -g @openai/codex@latest` | `npm install -g @openai/codex@latest` |
-| Claude Code | `npm install -g @anthropic-ai/claude-code@latest` | `npm install -g @anthropic-ai/claude-code@latest` |
+| Codex (интерфейс) | `winget install -e --id 9PLM9XGG6VKS --source msstore` | `winget upgrade -e --id 9PLM9XGG6VKS --source msstore` |
+| Claude Code CLI | `npm install -g @anthropic-ai/claude-code@latest` | `npm install -g @anthropic-ai/claude-code@latest` |
+| Claude (интерфейс) | `winget install -e --id Anthropic.Claude --source winget` | `winget upgrade -e --id Anthropic.Claude --source winget` |
 | Obsidian | `winget install -e --id Obsidian.Obsidian --source winget` | `winget upgrade -e --id Obsidian.Obsidian --source winget` |
 | AmneziaVPN | `winget install -e --id AmneziaVPN.AmneziaVPN --source winget` | `winget upgrade -e --id AmneziaVPN.AmneziaVPN --source winget` |
 | VLC | `winget install -e --id VideoLAN.VLC --source winget` | `winget upgrade -e --id VideoLAN.VLC --source winget` |
+| Steam | `winget install -e --id Valve.Steam --source winget` | `winget upgrade -e --id Valve.Steam --source winget` |
 | NVIDIA драйверы | `.\setup.ps1 -Apps nvidia` — открыть официальный подбор | Тот же пункт для подбора нового драйвера |
 
 Python выбран явно в ветке 3.13, чтобы устанавливать определённое рабочее окружение.
@@ -222,7 +269,11 @@ Python выбран явно в ветке 3.13, чтобы устанавлив
 - [WinGet: скачивание](https://learn.microsoft.com/en-us/windows/package-manager/winget/download)
 - [Microsoft: восстановление WinGet](https://learn.microsoft.com/en-us/windows/package-manager/winget/troubleshooting)
 - [OpenAI Docs: установка Codex через npm](https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex)
+- [OpenAI Docs: приложение Codex/ChatGPT для Windows](https://learn.chatgpt.com/docs/windows/windows-app)
 - [Claude Code: установка](https://code.claude.com/docs/en/setup)
+- [Claude Code в Claude Desktop](https://code.claude.com/docs/en/desktop)
+- [Манифесты Claude Desktop](https://github.com/microsoft/winget-pkgs/tree/master/manifests/a/Anthropic/Claude)
+- [Манифесты Steam](https://github.com/microsoft/winget-pkgs/tree/master/manifests/v/Valve/Steam)
 - [Манифесты AmneziaVPN](https://github.com/microsoft/winget-pkgs/tree/master/manifests/a/AmneziaVPN/AmneziaVPN)
 - [Загрузки AmneziaVPN](https://amnezia.org/en/downloads)
 - [Загрузки Obsidian](https://obsidian.md/download)
@@ -255,8 +306,12 @@ Windows Terminal / PowerShell Preview, определение MSIX и MSI и р�
 операциями реестра. Проверены резервные копии, сохранение JSONC, повторный запуск,
 откат частичной ошибки и отсутствие изменений при DryRun/скачивании.
 
-Предыдущая версия проходила проверки в PowerShell 7 30 сентября; в текущем
-окружении PowerShell 7 не найден, поэтому новое меню в нём пока не проверено.
+Проверено 3 октября 2026 года: 116 локальных проверок прошли в Windows
+PowerShell 5.1 и PowerShell 7 Preview. Проверены независимый выбор приложений
+и CLI, определение установленных вариантов, источник Microsoft Store для
+Codex, пакеты Claude Desktop и Steam, поведение `-Download` для Store.
+Также проверены `-List` в PowerShell 7 с настоящими статусами приложений
+и `-DryRun` новых пунктов при запуске через `powershell.exe -File`.
 
 Проверка реального скачивания/установки на чистой Windows, восстановления WinGet,
 подбора драйвера в браузере и запросов UAC пока не выполнена. Скрипт и тесты сохранены в UTF-8 с BOM для
