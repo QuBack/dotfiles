@@ -1,14 +1,16 @@
 # Следующие шаги
 
-Обновлено 1 октября 2026 года. Упрощено меню установки, добавлены Windows Terminal
-и PowerShell 7 Preview, добавлены Google Chrome и настройка запуска по умолчанию.
+Обновлено 5 октября 2026 года. В каталоге есть Windows Terminal, PowerShell 7
+Preview, PowerToys, WinRAR, Google Chrome, GitHub CLI и Telegram Desktop. AmneziaVPN
+переведена с WinGet на ручное скачивание и установку с официального сайта.
 
 ## Git и GitHub CLI
 
-Git уже есть в каталоге (`Git.Git`). Следующим этапом добавить отдельный пункт
-GitHub CLI (`gh`, пакет WinGet `GitHub.cli`) и проверку `gh.exe`.
-Уточнить состав общего набора и автоматические зависимости для CLI.
-Установка gh и вход в GitHub — отдельные шаги; вход выполняет пользователь.
+Git (`Git.Git`) и GitHub CLI (`gh`, пакет WinGet `GitHub.cli`) уже есть в
+каталоге и включены в «Установить всё». Наличие GitHub CLI проверяется по
+`gh.exe` в PATH или записи установленного приложения Windows.
+GitHub CLI можно выбрать отдельно; установка не добавляет зависимостей.
+Вход в GitHub выполняет пользователь командой `gh auth login`.
 
 ## Claude Code: frontend-design
 

@@ -21,9 +21,13 @@ $script:CommandCache = @{}
 $script:NvidiaHardware = $null
 $script:Catalog = @(
     [pscustomobject]@{Key='git'; Name='Git'; Id='Git.Git'; Kind='winget'; Commands=@('git.exe'); Pattern='^Git( version)? '; Dependencies=@()},
+    [pscustomobject]@{Key='gh'; Name='GitHub CLI'; Id='GitHub.cli'; Kind='winget'; Commands=@('gh.exe'); Pattern='^GitHub CLI( |$)'; Dependencies=@()},
     [pscustomobject]@{Key='terminal'; Name='Windows Terminal'; Id='Microsoft.WindowsTerminal'; Kind='winget'; Commands=@(); Pattern='^Windows Terminal$'; AppxName='Microsoft.WindowsTerminal'; Dependencies=@()},
     [pscustomobject]@{Key='powershell-preview'; Name='PowerShell 7 Preview'; Id='Microsoft.PowerShell.Preview'; Kind='winget'; Commands=@(); Pattern='^PowerShell 7.*(?:preview|rc)'; AppxName='Microsoft.PowerShellPreview'; Dependencies=@()},
+    [pscustomobject]@{Key='powertoys'; Name='PowerToys'; Id='Microsoft.PowerToys'; Kind='winget'; Commands=@(); Pattern='^(Microsoft )?PowerToys( \(| \d|$)'; Dependencies=@()},
+    [pscustomobject]@{Key='winrar'; Name='WinRAR'; Id='RARLab.WinRAR'; Kind='winget'; Commands=@(); Pattern='^WinRAR( |$)'; Dependencies=@()},
     [pscustomobject]@{Key='chrome'; Name='Google Chrome'; Id='Google.Chrome'; Kind='winget'; Commands=@(); Pattern='^Google Chrome$'; Dependencies=@()},
+    [pscustomobject]@{Key='telegram'; Name='Telegram Desktop'; Id='Telegram.TelegramDesktop'; Kind='winget'; Commands=@(); Pattern='^Telegram Desktop( |$)'; Dependencies=@()},
     [pscustomobject]@{Key='vscode'; Name='VS Code'; Id='Microsoft.VisualStudioCode'; Kind='winget'; Commands=@('code.cmd'); Pattern='^Microsoft Visual Studio Code'; Dependencies=@()},
     [pscustomobject]@{Key='python'; Name='Python 3.13'; Id='Python.Python.3.13'; Kind='winget'; Commands=@(); Pattern='^Python 3\.13\.\d+ \((64-bit|32-bit|ARM64)\)$'; Dependencies=@()},
     [pscustomobject]@{Key='node'; Name='Node.js LTS'; Id='OpenJS.NodeJS.LTS'; Kind='winget'; Commands=@('node.exe'); Pattern='^Node\.js$'; Dependencies=@()},
@@ -32,7 +36,7 @@ $script:Catalog = @(
     [pscustomobject]@{Key='claude'; Name='Claude Code CLI'; Id='@anthropic-ai/claude-code'; Kind='npm'; Commands=@('claude.cmd','claude.exe'); Pattern='(?!)'; Dependencies=@('node')},
     [pscustomobject]@{Key='claude-desktop'; Name='Claude (интерфейс)'; Id='Anthropic.Claude'; Kind='winget'; Commands=@(); Pattern='^Claude( Desktop)?( \d.*)?$'; AppxName='Claude'; Dependencies=@()},
     [pscustomobject]@{Key='obsidian'; Name='Obsidian'; Id='Obsidian.Obsidian'; Kind='winget'; Commands=@(); Pattern='^Obsidian( |$)'; Dependencies=@()},
-    [pscustomobject]@{Key='amnezia'; Name='AmneziaVPN'; Id='AmneziaVPN.AmneziaVPN'; Kind='winget'; Commands=@(); Pattern='^AmneziaVPN( |$)'; Dependencies=@()},
+    [pscustomobject]@{Key='amnezia'; Name='AmneziaVPN'; Id='https://amnezia.org/ru/downloads'; Kind='manual'; Commands=@(); Pattern='^AmneziaVPN( |$)'; Dependencies=@()},
     [pscustomobject]@{Key='vlc'; Name='VLC'; Id='VideoLAN.VLC'; Kind='winget'; Commands=@('vlc.exe'); Pattern='^VLC media player( |$)'; Dependencies=@()},
     [pscustomobject]@{Key='steam'; Name='Steam'; Id='Valve.Steam'; Kind='winget'; Commands=@(); Pattern='^Steam$'; Dependencies=@()},
     [pscustomobject]@{Key='nvidia'; Name='NVIDIA драйверы'; Id='https://www.nvidia.com/en-us/drivers/'; Kind='manual'; Commands=@(); Pattern='(?!)'; Dependencies=@()}
@@ -147,6 +151,11 @@ function Open-NvidiaDriverPage {
     Start-Process -FilePath (Get-App 'nvidia').Id -ErrorAction Stop
 }
 
+function Open-AmneziaDownloadPage {
+    Write-Host 'Выберите Windows на сайте Amnezia, скачайте и запустите установщик AmneziaVPN вручную.'
+    Start-Process -FilePath (Get-App 'amnezia').Id -ErrorAction Stop
+}
+
 function Get-InstallPlan([string[]]$Keys) {
     $seen = @{}
     $ordered = [Collections.Generic.List[object]]::new()
@@ -220,6 +229,8 @@ function Save-DownloadReceipt($App, [string]$Directory, [string[]]$Files) {
 }
 
 function Get-CachedDownload($App) {
+    # Manual downloads happen in the browser, outside this script's cache.
+    if ($App.Kind -eq 'manual') { return $null }
     $path = Get-ReceiptPath $App
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
     try {
@@ -239,7 +250,7 @@ function Get-CachedDownload($App) {
 }
 
 function Download-App($App) {
-    if ($App.Kind -eq 'manual') { throw 'Для NVIDIA используйте официальный подбор драйвера через меню.' }
+    if ($App.Kind -eq 'manual') { throw "Для $($App.Name) используйте официальный сайт через меню: $($App.Id)" }
     if ($App.Kind -eq 'winget' -and (Get-WinGetSource $App) -eq 'msstore') {
         throw 'Отдельное скачивание пакета Microsoft Store не поддерживается. Выберите установку.'
     }
@@ -278,7 +289,7 @@ function Download-App($App) {
 }
 
 function Install-App($App) {
-    if ($App.Kind -eq 'manual') { throw 'Для NVIDIA используйте официальный подбор драйвера через меню.' }
+    if ($App.Kind -eq 'manual') { throw "Для $($App.Name) используйте официальный сайт через меню: $($App.Id)" }
     if ($App.Kind -eq 'npm') {
         Update-SessionPath
         if (-not (Test-NpmRuntimeReady)) {
@@ -514,7 +525,11 @@ function Invoke-SetupAction([string[]]$Keys, [ValidateSet('Install','Download')]
         } elseif ($Preview) {
             $status = 'Plan'
             $message = "$Action $($app.Id)"
-            if ($app.Kind -eq 'manual') { $message = 'Открыть сайт NVIDIA; выбрать и установить драйвер вручную' }
+            if ($app.Key -eq 'nvidia') { $message = 'Открыть сайт NVIDIA; выбрать и установить драйвер вручную' }
+            elseif ($app.Key -eq 'amnezia') {
+                $message = "Открыть $($app.Id); скачать и установить AmneziaVPN вручную"
+                if ($Action -eq 'Install' -and (Test-AppInstalled $app)) { $message = 'Уже установлено: будет пропущено' }
+            }
             elseif ($Action -eq 'Download' -and $app.Kind -eq 'winget' -and (Get-WinGetSource $app) -eq 'msstore') {
                 $message = 'Отдельное скачивание Microsoft Store не поддерживается; выберите установку'
             }
@@ -529,8 +544,14 @@ function Invoke-SetupAction([string[]]$Keys, [ValidateSet('Install','Download')]
             Write-Host "`n>>> $Action : $($app.Name)" -ForegroundColor Cyan
             try {
                 if ($app.Kind -eq 'manual') {
-                    Open-NvidiaDriverPage
-                    $status = 'Manual'; $message = 'Открыт официальный сайт. Требуется выбор и установка драйвера.'
+                    if ($app.Key -eq 'nvidia') {
+                        Open-NvidiaDriverPage
+                        $message = 'Открыт официальный сайт. Требуется выбор и установка драйвера.'
+                    } else {
+                        Open-AmneziaDownloadPage
+                        $message = 'Открыт официальный сайт Amnezia. Скачайте и установите AmneziaVPN вручную.'
+                    }
+                    $status = 'Manual'
                 } else {
                     if ($Action -eq 'Install') { Install-App $app }
                     else { Download-App $app }
@@ -556,6 +577,12 @@ function Show-Report($Results) {
     }
     if (@($Results | Where-Object { $_.Key -eq 'nvidia' -and $_.Status -eq 'Manual' }).Count -gt 0) {
         Write-Host 'NVIDIA: скачивание и установка драйвера завершаются на официальном сайте. Драйвер ещё не установлен этим скриптом.' -ForegroundColor Yellow
+    }
+    if (@($Results | Where-Object { $_.Key -eq 'amnezia' -and $_.Status -eq 'Manual' }).Count -gt 0) {
+        Write-Host 'AmneziaVPN: выберите Windows на официальном сайте, скачайте и запустите установщик вручную.' -ForegroundColor Yellow
+    }
+    if (@($Results | Where-Object { $_.Key -eq 'gh' -and $_.Status -in @('OK','Skipped') }).Count -gt 0) {
+        Write-Host 'GitHub CLI: для входа выполните gh auth login в новом терминале.'
     }
 }
 
@@ -643,6 +670,7 @@ function Get-MenuStatuses {
         }
         $text = 'Не установлено'
         if (Test-AppInstalled $app) { $text = 'Установлено' }
+        elseif ($app.Kind -eq 'manual') { $text = 'Скачать и установить вручную' }
         if ($null -ne (Get-CachedDownload $app)) { $text += ' / Скачано' }
         $statuses[$app.Key] = $text
     }

@@ -41,9 +41,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
     Установить выбранное (0)
 
     [ ] Git                  Установлено
+    [ ] GitHub CLI           Не установлено
     [ ] Windows Terminal     Не установлено
     [ ] PowerShell 7 Preview Не установлено
+    [ ] PowerToys            Не установлено
+    [ ] WinRAR               Не установлено
     [ ] Google Chrome        Не установлено
+    [ ] Telegram Desktop     Не установлено
     [ ] VS Code              Не установлено
     [ ] Python 3.13          Не установлено
     [ ] Node.js LTS          Не установлено
@@ -52,7 +56,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
     [ ] Claude Code CLI      Не установлено
     [ ] Claude (интерфейс)   Не установлено
     [ ] Obsidian             Не установлено
-    [ ] AmneziaVPN           Не установлено
+    [ ] AmneziaVPN           Скачать и установить вручную
     [ ] VLC                  Не установлено
     [ ] Steam                Не установлено
     [ ] NVIDIA драйверы      GTX 1660 Ti / ручной подбор
@@ -95,15 +99,21 @@ Node.js. Уже установленные CLI пропускаются неза
 
 Для Codex и Claude предусмотрены отдельные отметки «CLI» и «интерфейс».
 Можно установить любой вариант или оба одновременно. «Установить всё» включает
-оба варианта каждого инструмента, Google Chrome и Steam.
+оба варианта каждого инструмента, GitHub CLI, PowerToys, WinRAR, Google Chrome,
+Telegram Desktop и Steam.
+Для AmneziaVPN открывается официальный сайт для ручной установки.
 
 | Вариант | Ключ для `-Apps` | Способ установки |
 |---|---|---|
+| GitHub CLI | `gh` | WinGet: `GitHub.cli` |
+| PowerToys | `powertoys` | WinGet: `Microsoft.PowerToys` |
+| WinRAR | `winrar` | WinGet: `RARLab.WinRAR` |
 | Codex CLI | `codex` | npm: `@openai/codex` |
 | Codex с интерфейсом | `codex-desktop` | WinGet, источник Microsoft Store: `9PLM9XGG6VKS` |
 | Claude Code CLI | `claude` | npm: `@anthropic-ai/claude-code` |
 | Claude Code с интерфейсом | `claude-desktop` | WinGet: `Anthropic.Claude` (Claude Desktop, вкладка Code) |
 | Google Chrome | `chrome` | WinGet: `Google.Chrome` |
+| Telegram Desktop | `telegram` | WinGet: `Telegram.TelegramDesktop` |
 | Steam | `steam` | WinGet: `Valve.Steam` |
 
 Приложения не требуют установки отдельного CLI и не добавляют Node.js/npm
@@ -139,8 +149,20 @@ Codex/ChatGPT в меню «Пуск» и войдите в аккаунт.
 # Google Chrome и Steam
 .\setup.ps1 -Apps chrome,steam
 
+# Git и GitHub CLI
+.\setup.ps1 -Apps git,gh
+
+# Telegram Desktop
+.\setup.ps1 -Apps telegram
+
+# Microsoft PowerToys
+.\setup.ps1 -Apps powertoys
+
+# WinRAR
+.\setup.ps1 -Apps winrar
+
 # Скачать выбранные программы
-.\setup.ps1 -Apps amnezia,obsidian -Download
+.\setup.ps1 -Apps gh,chrome,obsidian -Download
 
 # Посмотреть весь план; ничего не скачивает и не создаёт файлы
 .\setup.ps1 -All -DryRun
@@ -156,7 +178,7 @@ Codex/ChatGPT в меню «Пуск» и войдите в аккаунт.
 полную команду запуска с `powershell.exe -ExecutionPolicy Bypass -File`, добавив
 те же параметры после имени файла. Автоматический режим возвращает код 0 при
 успехе, 1 при ошибке или заблокированной зависимости, 2 если требуется ручное
-действие (драйвер NVIDIA, отдельное скачивание приложения Microsoft Store
+действие (AmneziaVPN, драйвер NVIDIA, отдельное скачивание приложения Microsoft Store
 или неподдерживаемая Windows для терминала по умолчанию).
 WinGet принимает лицензии
 выбранных программ, чтобы не запрашивать их в ходе каждой установки; UAC и
@@ -177,6 +199,26 @@ WinGet принимает лицензии
 ручного запуска или переноса; они не используются автоматически при установке.**
 Это значит, что после `-Download` установка через WinGet может скачать пакет ещё раз.
 Офлайн-установка и скачивание всех зависимостей в этой версии не реализованы.
+
+### AmneziaVPN
+
+AmneziaVPN больше не скачивается и не устанавливается через WinGet.
+При выборе `amnezia` открывается [официальная страница загрузок](https://amnezia.org/ru/downloads):
+выберите Windows, скачайте и запустите установщик вручную.
+
+```powershell
+# Открыть официальный сайт Amnezia для установки
+.\setup.ps1 -Apps amnezia
+```
+
+`-Download` для Amnezia также открывает эту страницу. Операция получает статус
+`Manual` и код 2 в автоматическом режиме; выбранные автоматические установки
+и скачивания продолжаются. Файлы, скачанные браузером, не попадают в кэш
+скрипта и не получают статус «Скачано». Старые записи кэша WinGet для Amnezia
+игнорируются. Если AmneziaVPN уже установлена, обычная установка пропускается.
+`-DryRun` только показывает план и не открывает браузер.
+
+### Другие способы установки
 
 Для `codex-desktop` поддерживается установка через источник `msstore`.
 Отдельное скачивание через `-Download` в этом скрипте не поддерживается:
@@ -223,6 +265,7 @@ EXE для всех NVIDIA не подходит. NVIDIA App может помо
 
 ```powershell
 git --version
+gh --version
 node --version
 py -3.13 --version
 codex --version
@@ -233,15 +276,21 @@ claude --version
 импортировать свой VPN-конфиг. Obsidian устанавливается как приложение;
 хранилище заметок переносится отдельно. Приложение не копирует личные настройки,
 не сохраняет пароли и не настраивает VPN-сервер.
+Вход в GitHub CLI выполняется отдельно командой `gh auth login`;
+установщик не запускает авторизацию автоматически.
 
 ## Отдельные команды установки и обновления
 
 | Программа | Установить | Обновить |
 |---|---|---|
 | Git | `winget install -e --id Git.Git --source winget` | `winget upgrade -e --id Git.Git --source winget` |
+| GitHub CLI | `winget install -e --id GitHub.cli --source winget` | `winget upgrade -e --id GitHub.cli --source winget` |
 | Windows Terminal | `winget install -e --id Microsoft.WindowsTerminal --source winget` | `winget upgrade -e --id Microsoft.WindowsTerminal --source winget` |
 | PowerShell 7 Preview | `winget install -e --id Microsoft.PowerShell.Preview --source winget` | `winget upgrade -e --id Microsoft.PowerShell.Preview --source winget` |
+| PowerToys | `winget install -e --id Microsoft.PowerToys --source winget` | `winget upgrade -e --id Microsoft.PowerToys --source winget` |
+| WinRAR | `winget install -e --id RARLab.WinRAR --source winget` | `winget upgrade -e --id RARLab.WinRAR --source winget` |
 | Google Chrome | `winget install -e --id Google.Chrome --source winget` | `winget upgrade -e --id Google.Chrome --source winget` |
+| Telegram Desktop | `winget install -e --id Telegram.TelegramDesktop --source winget` | `winget upgrade -e --id Telegram.TelegramDesktop --source winget` |
 | VS Code | `winget install -e --id Microsoft.VisualStudioCode --source winget` | `winget upgrade -e --id Microsoft.VisualStudioCode --source winget` |
 | Python 3.13 | `winget install -e --id Python.Python.3.13 --source winget` | `winget upgrade -e --id Python.Python.3.13 --source winget` |
 | Node.js LTS | `winget install -e --id OpenJS.NodeJS.LTS --source winget` | `winget upgrade -e --id OpenJS.NodeJS.LTS --source winget` |
@@ -250,7 +299,7 @@ claude --version
 | Claude Code CLI | `npm install -g @anthropic-ai/claude-code@latest` | `npm install -g @anthropic-ai/claude-code@latest` |
 | Claude (интерфейс) | `winget install -e --id Anthropic.Claude --source winget` | `winget upgrade -e --id Anthropic.Claude --source winget` |
 | Obsidian | `winget install -e --id Obsidian.Obsidian --source winget` | `winget upgrade -e --id Obsidian.Obsidian --source winget` |
-| AmneziaVPN | `winget install -e --id AmneziaVPN.AmneziaVPN --source winget` | `winget upgrade -e --id AmneziaVPN.AmneziaVPN --source winget` |
+| AmneziaVPN | `.\setup.ps1 -Apps amnezia` — открыть официальный сайт и установить вручную | Скачать новую версию с [официального сайта](https://amnezia.org/ru/downloads) |
 | VLC | `winget install -e --id VideoLAN.VLC --source winget` | `winget upgrade -e --id VideoLAN.VLC --source winget` |
 | Steam | `winget install -e --id Valve.Steam --source winget` | `winget upgrade -e --id Valve.Steam --source winget` |
 | NVIDIA драйверы | `.\setup.ps1 -Apps nvidia` — открыть официальный подбор | Тот же пункт для подбора нового драйвера |
@@ -262,9 +311,14 @@ Python выбран явно в ветке 3.13, чтобы устанавлив
 
 Источники:
 
+- [GitHub CLI: установка в Windows](https://github.com/cli/cli/blob/trunk/docs/install_windows.md)
+- [AmneziaVPN: официальные загрузки](https://amnezia.org/ru/downloads)
 - [Windows Terminal: установка](https://github.com/microsoft/terminal#via-windows-package-manager-cli-aka-winget)
 - [PowerShell: установка и Preview](https://learn.microsoft.com/en-us/powershell/scripting/install/install-powershell-on-windows)
+- [PowerToys: установка](https://learn.microsoft.com/en-us/windows/powertoys/install)
+- [Манифесты WinRAR](https://github.com/microsoft/winget-pkgs/tree/master/manifests/r/RARLab/WinRAR)
 - [Манифесты Google Chrome](https://github.com/microsoft/winget-pkgs/tree/master/manifests/g/Google/Chrome)
+- [Манифесты Telegram Desktop](https://github.com/microsoft/winget-pkgs/tree/master/manifests/t/Telegram/TelegramDesktop)
 - [WinGet: установка](https://learn.microsoft.com/en-us/windows/package-manager/winget/install)
 - [WinGet: скачивание](https://learn.microsoft.com/en-us/windows/package-manager/winget/download)
 - [Microsoft: восстановление WinGet](https://learn.microsoft.com/en-us/windows/package-manager/winget/troubleshooting)
@@ -274,8 +328,6 @@ Python выбран явно в ветке 3.13, чтобы устанавлив
 - [Claude Code в Claude Desktop](https://code.claude.com/docs/en/desktop)
 - [Манифесты Claude Desktop](https://github.com/microsoft/winget-pkgs/tree/master/manifests/a/Anthropic/Claude)
 - [Манифесты Steam](https://github.com/microsoft/winget-pkgs/tree/master/manifests/v/Valve/Steam)
-- [Манифесты AmneziaVPN](https://github.com/microsoft/winget-pkgs/tree/master/manifests/a/AmneziaVPN/AmneziaVPN)
-- [Загрузки AmneziaVPN](https://amnezia.org/en/downloads)
 - [Загрузки Obsidian](https://obsidian.md/download)
 - [Манифесты VLC](https://github.com/microsoft/winget-pkgs/tree/master/manifests/v/VideoLAN/VLC)
 - [Официальные драйверы NVIDIA](https://www.nvidia.com/en-us/drivers/)
@@ -313,14 +365,19 @@ Codex, пакеты Claude Desktop и Steam, поведение `-Download` дл
 Также проверены `-List` в PowerShell 7 с настоящими статусами приложений
 и `-DryRun` новых пунктов при запуске через `powershell.exe -File`.
 
+Проверено 5 октября 2026 года: 138 локальных проверок прошли в Windows
+PowerShell 5.1 и PowerShell 7. Проверены GitHub CLI, совместный выбор с Chrome,
+ручная установка Amnezia, пропуск установленной Amnezia, игнорирование старого
+кэша WinGet и продолжение других операций при ошибке открытия сайта.
+
 Проверка реального скачивания/установки на чистой Windows, восстановления WinGet,
 подбора драйвера в браузере и запросов UAC пока не выполнена. Скрипт и тесты сохранены в UTF-8 с BOM для
 поддержки русского текста в Windows PowerShell 5.1.
 
 ## Следующие шаги
 
-Git уже входит в каталог. Добавление GitHub CLI (`gh`), официального плагина
-`frontend-design` для Claude Code описаны в
+Git и GitHub CLI (`gh`) уже входят в каталог. Следующий этап — официальный
+плагин `frontend-design` для Claude Code и дополнительные настройки оболочки:
 [NEXT_STEPS.md](NEXT_STEPS.md).
 
 Windows Terminal (стабильный канал), PowerShell 7 Preview и Google Chrome уже

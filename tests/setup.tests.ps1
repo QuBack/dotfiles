@@ -7,6 +7,7 @@ $originalRuntimeReady = (Get-Command Test-NpmRuntimeReady).ScriptBlock
 $originalHardware = (Get-Command Get-NvidiaHardware).ScriptBlock
 $originalTestInstalled = (Get-Command Test-AppInstalled).ScriptBlock
 $originalUpdatePath = (Get-Command Update-SessionPath).ScriptBlock
+$originalAmneziaPage = (Get-Command Open-AmneziaDownloadPage).ScriptBlock
 $originalLocalAppData = $env:LOCALAPPDATA
 $script:passed = 0
 function Assert($Condition, $Message) {
@@ -56,6 +57,8 @@ try {
     Assert (($plan.Key -join ',') -eq 'node,codex,claude') 'both CLIs share one Node dependency'
     $plan = @(Get-InstallPlan @('codex-desktop','claude-desktop','steam','chrome'))
     Assert (($plan.Key -join ',') -eq 'codex-desktop,claude-desktop,steam,chrome') 'desktop apps, Steam and Chrome need no npm runtime'
+    $plan = @(Get-InstallPlan @('gh','chrome','amnezia'))
+    Assert (($plan.Key -join ',') -eq 'gh,chrome,amnezia') 'GitHub CLI, Chrome and manual Amnezia need no runtime dependencies'
     $selectedVariants = @{}
     foreach ($key in @('codex-desktop','claude-desktop')) {
         $row = 2 + [array]::IndexOf(@($script:Catalog.Key), $key)
@@ -212,6 +215,47 @@ try {
     $script:NvidiaHardware = $null
     function Get-CimInstance { return [pscustomobject]@{Name='Microsoft Basic Display Adapter'; PNPDeviceID='PCI\VEN_10DE&DEV_2182'; DriverVersion='0'} }
     Assert ((& $originalHardware).Detected -eq $true) 'NVIDIA detected by PCI vendor without its driver'
+
+    # Amnezia goes to its official download page, never WinGet or the download cache.
+    $script:amneziaBrowserCalls = 0
+    function Open-AmneziaDownloadPage { $script:amneziaBrowserCalls++ }
+    foreach ($action in @('Install','Download')) {
+        $result = @(Invoke-SetupAction @('amnezia','gh','chrome') $action -Preview)
+        Assert (($result.Status -join ',') -eq 'Plan,Plan,Plan' -and $result[0].Message -match 'AmneziaVPN.*вручную' -and $script:amneziaBrowserCalls -eq 0) "Amnezia $action preview describes manual action without opening browser"
+    }
+    $script:calls = @()
+    $result = @(Invoke-SetupAction @('amnezia','gh','chrome') 'Install')
+    Assert (($result.Status -join ',') -eq 'Manual,OK,OK' -and ($script:calls -join ',') -eq 'gh,chrome' -and $script:amneziaBrowserCalls -eq 1) 'Amnezia manual install allows GitHub CLI and Chrome installation to continue'
+    $script:downloadCalls = @()
+    function Download-App($App) { $script:downloadCalls += $App.Key }
+    $result = @(Invoke-SetupAction @('amnezia','gh','chrome') 'Download')
+    Assert (($result.Status -join ',') -eq 'Manual,OK,OK' -and ($script:downloadCalls -join ',') -eq 'gh,chrome' -and $script:amneziaBrowserCalls -eq 2) 'Amnezia manual download leaves other selected downloads running'
+    Assert (-not (Test-Path -LiteralPath (Get-ReceiptPath (Get-App 'amnezia')))) 'manual Amnezia action creates no download receipt'
+    $legacyAmnezia = [pscustomobject]@{Key='amnezia'; Id='AmneziaVPN.AmneziaVPN'; Kind='winget'}
+    Save-DownloadReceipt $legacyAmnezia $payloadDir @($legacyPayload)
+    Assert ($null -eq (Get-CachedDownload (Get-App 'amnezia'))) 'obsolete WinGet Amnezia receipt ignored'
+    Assert ((Get-MenuStatuses)['amnezia'] -eq 'Скачать и установить вручную') 'Amnezia menu status explains manual installation without cached status'
+    $script:Apps = @('amnezia')
+    Assert ((Invoke-SetupMain) -eq 2) 'manual Amnezia install returns action-required exit code'
+    $script:installed['amnezia'] = $true
+    $result = @(Invoke-SetupAction @('amnezia') 'Install')
+    Assert ($result[0].Status -eq 'Skipped' -and $script:amneziaBrowserCalls -eq 3) 'installed Amnezia skipped without opening browser'
+    $result = @(Invoke-SetupAction @('amnezia') 'Install' -Preview)
+    Assert ($result[0].Message -match 'пропущено' -and $script:amneziaBrowserCalls -eq 3) 'installed Amnezia preview explains skip'
+    $script:installed.Remove('amnezia')
+    function Open-AmneziaDownloadPage { throw 'simulated browser error' }
+    $result = @(Invoke-SetupAction @('amnezia','gh','chrome') 'Install')
+    Assert (($result.Status -join ',') -eq 'Error,OK,OK') 'browser failure is reported without blocking independent installers'
+    foreach ($operation in @($originalDownload,$originalInstall)) {
+        $thrown = $false
+        try { & $operation (Get-App 'amnezia') } catch { $thrown = $_.Exception.Message -match 'AmneziaVPN.*amnezia.org' }
+        Assert $thrown 'direct Amnezia operation rejects automatic install or download before reaching WinGet'
+    }
+    $script:openedPage = $null
+    function Start-Process($FilePath) { $script:openedPage = $FilePath }
+    & $originalAmneziaPage
+    Assert ($script:openedPage -eq 'https://amnezia.org/ru/downloads') 'Amnezia opens the official download page'
+
     function Ensure-WinGet { }
     $script:nativeCalls = @()
     & $originalInstall (Get-App 'vlc')
@@ -219,7 +263,7 @@ try {
 
     Assert ((Get-App 'terminal').Id -eq 'Microsoft.WindowsTerminal') 'Terminal uses stable official package'
     Assert ((Get-App 'powershell-preview').Id -eq 'Microsoft.PowerShell.Preview') 'PowerShell uses official Preview channel'
-    foreach ($key in @('terminal','powershell-preview')) {
+    foreach ($key in @('terminal','powershell-preview','gh','chrome')) {
         $script:nativeCalls = @()
         & $originalInstall (Get-App $key)
         $call = $script:nativeCalls[0]
@@ -268,6 +312,21 @@ try {
     Assert (-not (& $originalTestInstalled (Get-App 'chrome'))) 'Chrome Beta does not satisfy stable Chrome'
     $script:mockRegistryNames = @('Google Chrome')
     Assert (& $originalTestInstalled (Get-App 'chrome')) 'Chrome detected through Windows installed applications'
+
+    Assert ((Get-App 'gh').Id -eq 'GitHub.cli' -and (Get-App 'gh').Commands -contains 'gh.exe') 'GitHub CLI uses official package and gh executable'
+    $script:mockRegistryNames = @('Git version 2.51.0','GitHub Desktop')
+    Assert (-not (& $originalTestInstalled (Get-App 'gh'))) 'Git and GitHub Desktop do not satisfy GitHub CLI'
+    $script:mockRegistryNames = @('GitHub CLI')
+    Assert (& $originalTestInstalled (Get-App 'gh')) 'GitHub CLI detected through installed application registry'
+    $script:mockRegistryNames = @()
+    function Find-SetupCommand($Name) {
+        if ($Name -eq 'gh.exe') { return [pscustomobject]@{Source=$Name} }
+        return $null
+    }
+    Assert (& $originalTestInstalled (Get-App 'gh')) 'GitHub CLI detected by gh.exe in PATH'
+    $script:Apps = @('gh,chrome')
+    $script:nativeCalls = @()
+    Assert ((Invoke-SetupMain) -eq 0 -and $script:nativeCalls.Count -eq 0) 'GitHub CLI and Chrome comma-separated selection works without installing in DryRun'
 
     # Desktop and CLI identities must stay independent.
     function Find-SetupCommand($Name) { return $null }
