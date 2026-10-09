@@ -19,6 +19,7 @@ $script:InstalledAppNames = $null
 $script:InstalledAppxNames = $null
 $script:CommandCache = @{}
 $script:NvidiaHardware = $null
+$script:WslVersion = $null
 $script:Catalog = @(
     [pscustomobject]@{Key='git'; Name='Git'; Id='Git.Git'; Kind='winget'; Commands=@('git.exe'); Pattern='^Git( version)? '; Dependencies=@()},
     [pscustomobject]@{Key='gh'; Name='GitHub CLI'; Id='GitHub.cli'; Kind='winget'; Commands=@('gh.exe'); Pattern='^GitHub CLI( |$)'; Dependencies=@()},
@@ -30,7 +31,11 @@ $script:Catalog = @(
     [pscustomobject]@{Key='telegram'; Name='Telegram Desktop'; Id='Telegram.TelegramDesktop'; Kind='winget'; Commands=@(); Pattern='^Telegram Desktop( |$)'; Dependencies=@()},
     [pscustomobject]@{Key='vscode'; Name='VS Code'; Id='Microsoft.VisualStudioCode'; Kind='winget'; Commands=@('code.cmd'); Pattern='^Microsoft Visual Studio Code'; Dependencies=@()},
     [pscustomobject]@{Key='python'; Name='Python 3.13'; Id='Python.Python.3.13'; Kind='winget'; Commands=@(); Pattern='^Python 3\.13\.\d+ \((64-bit|32-bit|ARM64)\)$'; Dependencies=@()},
+    [pscustomobject]@{Key='uv'; Name='uv'; Id='astral-sh.uv'; Kind='winget'; Commands=@('uv.exe'); Pattern='^uv( |$)'; Dependencies=@()},
+    [pscustomobject]@{Key='poetry'; Name='Poetry'; Id='poetry'; Kind='uv-tool'; Commands=@('poetry.exe','poetry.cmd'); Pattern='(?!)'; Dependencies=@('uv')},
     [pscustomobject]@{Key='node'; Name='Node.js LTS'; Id='OpenJS.NodeJS.LTS'; Kind='winget'; Commands=@('node.exe'); Pattern='^Node\.js$'; Dependencies=@()},
+    [pscustomobject]@{Key='wsl'; Name='WSL 2'; Id='Microsoft.WSL'; Kind='wsl'; Commands=@(); Pattern='^Windows Subsystem for Linux( |$)'; AppxName='MicrosoftCorporationII.WindowsSubsystemForLinux'; Dependencies=@()},
+    [pscustomobject]@{Key='docker'; Name='Docker Desktop'; Id='Docker.DockerDesktop'; Kind='winget'; Commands=@(); Pattern='^Docker Desktop( |$)'; Dependencies=@('wsl')},
     [pscustomobject]@{Key='codex'; Name='Codex CLI'; Id='@openai/codex'; Kind='npm'; Commands=@('codex.cmd','codex.exe'); Pattern='(?!)'; Dependencies=@('node')},
     [pscustomobject]@{Key='codex-desktop'; Name='Codex (интерфейс)'; Id='9PLM9XGG6VKS'; Kind='winget'; Source='msstore'; Commands=@(); Pattern='(?!)'; AppxName='OpenAI.Codex'; Dependencies=@()},
     [pscustomobject]@{Key='claude'; Name='Claude Code CLI'; Id='@anthropic-ai/claude-code'; Kind='npm'; Commands=@('claude.cmd','claude.exe'); Pattern='(?!)'; Dependencies=@('node')},
@@ -64,6 +69,7 @@ function Update-SessionPath {
     $script:InstalledAppNames = $null
     $script:InstalledAppxNames = $null
     $script:NvidiaHardware = $null
+    $script:WslVersion = $null
 }
 
 function Find-SetupCommand([string]$Name) {
@@ -102,6 +108,7 @@ function Get-InstalledAppxNames {
 
 function Test-AppInstalled($App) {
     if ($App.Key -eq 'node') { return (Test-NpmRuntimeReady) }
+    if ($App.Key -eq 'wsl') { return (Test-WslReady) }
     if ($App.PSObject.Properties['AppxName'] -and (Get-InstalledAppxNames) -contains $App.AppxName) { return $true }
     foreach ($name in $App.Commands) {
         if (Find-SetupCommand $name) { return $true }
@@ -122,6 +129,66 @@ function Get-NodeMajor {
 
 function Test-NpmRuntimeReady {
     return ((Get-NodeMajor) -ge 22 -and $null -ne (Find-SetupCommand 'npm.cmd'))
+}
+
+function Invoke-WslQuery([string[]]$ArgumentList) {
+    $command = Find-SetupCommand 'wsl.exe'
+    if (-not $command) { return [pscustomobject]@{ExitCode=-1; Output=''} }
+    $ErrorActionPreference = 'Continue'
+    $PSNativeCommandUseErrorActionPreference = $false
+    try {
+        $output = & $command.Source @ArgumentList 2>$null
+        return [pscustomobject]@{ExitCode=$LASTEXITCODE; Output=(($output -join "`n").Replace([string][char]0, ''))}
+    } catch { return [pscustomobject]@{ExitCode=-1; Output=''} }
+}
+
+function Get-WslVersion {
+    if ($null -ne $script:WslVersion) { return $script:WslVersion }
+    $script:WslVersion = [version]'0.0.0'
+    $app = Get-App 'wsl'
+    # wsl.exe ships with Windows even without WSL. Do not query that install stub.
+    if ((Get-InstalledAppxNames) -notcontains $app.AppxName -and
+        @(Get-InstalledAppNames | Where-Object { $_ -match $app.Pattern }).Count -eq 0) { return $script:WslVersion }
+    $result = Invoke-WslQuery @('--version')
+    if ($result.ExitCode -eq 0 -and $result.Output -match '(?m)^[^\r\n]*?:\s*(\d+\.\d+\.\d+(?:\.\d+)?)') {
+        $script:WslVersion = [version]$Matches[1]
+    }
+    return $script:WslVersion
+}
+
+function Test-WslReady {
+    if ((Get-WslVersion) -lt [version]'2.1.5') { return $false }
+    # A package alone does not enable Virtual Machine Platform or the hypervisor.
+    try {
+        if (-not (Get-Service -Name vmcompute -ErrorAction Stop)) { return $false }
+        if (-not (Get-CimInstance -ClassName Win32_ComputerSystem -OperationTimeoutSec 5 -ErrorAction Stop).HypervisorPresent) { return $false }
+    } catch { return $false }
+    return ((Invoke-WslQuery @('--status')).ExitCode -eq 0)
+}
+
+function Invoke-WslInstaller([string[]]$ArgumentList) {
+    $command = Find-SetupCommand 'wsl.exe'
+    if (-not $command) { throw 'wsl.exe не найден. Для установки WSL нужна поддерживаемая Windows 10/11.' }
+    Write-SetupLog ('wsl.exe ' + ($ArgumentList -join ' '))
+    # Enabling Windows components needs elevation; do not elevate the whole menu.
+    $process = Start-Process -FilePath $command.Source -ArgumentList $ArgumentList -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ErrorAction Stop
+    Write-SetupLog "wsl.exe: код $($process.ExitCode)"
+    if ($process.ExitCode -notin @(0,3010)) { throw "wsl.exe завершился с кодом $($process.ExitCode). Повторите из терминала администратора: .\setup.ps1 -Apps wsl,docker" }
+    return $process.ExitCode
+}
+
+function Install-Wsl {
+    $exitCode = Invoke-WslInstaller @('--install','--no-distribution','--web-download')
+    Update-SessionPath
+    if ($exitCode -ne 3010 -and (Get-WslVersion) -lt [version]'2.1.5') {
+        $exitCode = Invoke-WslInstaller @('--update','--web-download')
+        Update-SessionPath
+    }
+    if ($exitCode -eq 3010 -or -not (Test-WslReady)) {
+        return [pscustomobject]@{Status='Manual'; Message='WSL требует завершения настройки. Перезагрузите Windows, проверьте виртуализацию в BIOS/UEFI и повторите: .\setup.ps1 -Apps wsl,docker'}
+    }
+    $command = Find-SetupCommand 'wsl.exe'
+    Invoke-InstallerCommand $command.Source @('--set-default-version','2')
 }
 
 function Get-NvidiaHardware {
@@ -229,8 +296,8 @@ function Save-DownloadReceipt($App, [string]$Directory, [string[]]$Files) {
 }
 
 function Get-CachedDownload($App) {
-    # Manual downloads happen in the browser, outside this script's cache.
-    if ($App.Kind -eq 'manual') { return $null }
+    # These kinds do not produce reusable download receipts.
+    if ($App.Kind -in @('manual','uv-tool')) { return $null }
     $path = Get-ReceiptPath $App
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
     try {
@@ -251,6 +318,7 @@ function Get-CachedDownload($App) {
 
 function Download-App($App) {
     if ($App.Kind -eq 'manual') { throw "Для $($App.Name) используйте официальный сайт через меню: $($App.Id)" }
+    if ($App.Kind -eq 'uv-tool') { throw 'Отдельное скачивание Poetry не поддерживается. Выберите установку через uv.' }
     if ($App.Kind -eq 'winget' -and (Get-WinGetSource $App) -eq 'msstore') {
         throw 'Отдельное скачивание пакета Microsoft Store не поддерживается. Выберите установку.'
     }
@@ -290,6 +358,23 @@ function Download-App($App) {
 
 function Install-App($App) {
     if ($App.Kind -eq 'manual') { throw "Для $($App.Name) используйте официальный сайт через меню: $($App.Id)" }
+    if ($App.Kind -eq 'wsl') { return (Install-Wsl) }
+    if ($App.Kind -eq 'uv-tool') {
+        Update-SessionPath
+        $uvCommand = Find-SetupCommand 'uv.exe'
+        if (-not $uvCommand) { throw 'Для установки Poetry нужен uv. Выберите uv и poetry или откройте терминал заново.' }
+        Invoke-InstallerCommand $uvCommand.Source @('tool','install','--python','3.13',$App.Id)
+        Invoke-InstallerCommand $uvCommand.Source @('tool','update-shell')
+        Update-SessionPath
+        $toolCommand = $null
+        foreach ($name in $App.Commands) {
+            $toolCommand = Find-SetupCommand $name
+            if ($toolCommand) { break }
+        }
+        if (-not $toolCommand) { throw 'Poetry установлен, но команда не найдена в PATH. Откройте терминал заново и проверьте poetry --version.' }
+        Invoke-InstallerCommand $toolCommand.Source @('--version')
+        return
+    }
     if ($App.Kind -eq 'npm') {
         Update-SessionPath
         if (-not (Test-NpmRuntimeReady)) {
@@ -316,10 +401,16 @@ function Install-App($App) {
         # Node may need an upgrade or repair when npm is missing or the runtime is too old.
         if ($App.Key -eq 'node') { $arguments += '--force' }
         else { $arguments += '--no-upgrade' }
+        if ($App.Key -eq 'docker') { $arguments += @('--custom','--backend=wsl-2') }
         Invoke-InstallerCommand 'winget.exe' $arguments
         Update-SessionPath
         if ($App.Key -eq 'node' -and -not (Test-NpmRuntimeReady)) {
             throw 'После установки Node.js LTS не найдены Node.js 22+ и npm. Проверьте PATH и откройте терминал заново.'
+        }
+        if ($App.Key -eq 'uv') {
+            $uvCommand = Find-SetupCommand 'uv.exe'
+            if (-not $uvCommand) { throw 'После установки uv команда не найдена в PATH. Откройте терминал заново и проверьте uv --version.' }
+            Invoke-InstallerCommand $uvCommand.Source @('--version')
         }
     }
 }
@@ -517,6 +608,7 @@ function Invoke-SetupAction([string[]]$Keys, [ValidateSet('Install','Download')]
     if ($Action -eq 'Install') { $plan = @(Get-InstallPlan $Keys) }
     else { $plan = @($Keys | Select-Object -Unique | ForEach-Object { Get-App $_ }) }
     $failed = @{}
+    $pending = @{}
     foreach ($app in $plan) {
         $status = 'OK'
         $message = ''
@@ -533,13 +625,20 @@ function Invoke-SetupAction([string[]]$Keys, [ValidateSet('Install','Download')]
             elseif ($Action -eq 'Download' -and $app.Kind -eq 'winget' -and (Get-WinGetSource $app) -eq 'msstore') {
                 $message = 'Отдельное скачивание Microsoft Store не поддерживается; выберите установку'
             }
+            elseif ($Action -eq 'Download' -and $app.Kind -eq 'uv-tool') { $message = 'Отдельное скачивание Poetry не поддерживается; выберите установку через uv' }
             elseif ($Action -eq 'Install' -and (Test-AppInstalled $app)) { $message = 'Уже установлено: будет пропущено' }
+            elseif ($app.Key -eq 'wsl' -and $Action -eq 'Install') { $message = 'Установить / обновить WSL 2 без дистрибутива; запрос UAC, возможна перезагрузка' }
+            elseif ($app.Kind -eq 'uv-tool') { $message = 'uv tool install --python 3.13 poetry; отдельное окружение и добавление команды в PATH' }
         } elseif ($Action -eq 'Install' -and (Test-AppInstalled $app)) {
             $status = 'Skipped'; $message = 'Уже установлено'
         } elseif ($Action -eq 'Install' -and @($app.Dependencies | Where-Object { $failed.ContainsKey($_) }).Count -gt 0) {
             $status = 'Blocked'; $message = 'Не удалось установить зависимость'; $failed[$app.Key] = $true
+        } elseif ($Action -eq 'Install' -and @($app.Dependencies | Where-Object { $pending.ContainsKey($_) }).Count -gt 0) {
+            $status = 'Manual'; $message = 'Сначала завершите настройку WSL и повторите установку Docker'; $pending[$app.Key] = $true
         } elseif ($Action -eq 'Download' -and $app.Kind -eq 'winget' -and (Get-WinGetSource $app) -eq 'msstore') {
             $status = 'Manual'; $message = 'Отдельное скачивание Microsoft Store не поддерживается; выберите установку'
+        } elseif ($Action -eq 'Download' -and $app.Kind -eq 'uv-tool') {
+            $status = 'Manual'; $message = 'Отдельное скачивание Poetry не поддерживается; выберите установку через uv'
         } else {
             Write-Host "`n>>> $Action : $($app.Name)" -ForegroundColor Cyan
             try {
@@ -553,9 +652,13 @@ function Invoke-SetupAction([string[]]$Keys, [ValidateSet('Install','Download')]
                     }
                     $status = 'Manual'
                 } else {
-                    if ($Action -eq 'Install') { Install-App $app }
-                    else { Download-App $app }
                     $message = 'Готово'
+                    if ($Action -eq 'Install') {
+                        $installResult = Install-App $app
+                        if ($null -ne $installResult -and $installResult.Status -eq 'Manual') {
+                            $status = 'Manual'; $message = $installResult.Message; $pending[$app.Key] = $true
+                        }
+                    } else { Download-App $app }
                 }
             } catch {
                 $status = 'Error'; $message = $_.Exception.Message; $failed[$app.Key] = $true
@@ -583,6 +686,12 @@ function Show-Report($Results) {
     }
     if (@($Results | Where-Object { $_.Key -eq 'gh' -and $_.Status -in @('OK','Skipped') }).Count -gt 0) {
         Write-Host 'GitHub CLI: для входа выполните gh auth login в новом терминале.'
+    }
+    if (@($Results | Where-Object { $_.Key -eq 'docker' -and $_.Status -in @('OK','Skipped') }).Count -gt 0) {
+        Write-Host 'Docker: откройте Docker Desktop из меню «Пуск», дождитесь запуска движка WSL 2 и выполните docker run --rm hello-world.'
+    }
+    if (@($Results | Where-Object { $_.Key -eq 'wsl' -and $_.Status -in @('OK','Skipped') }).Count -gt 0) {
+        Write-Host 'WSL 2: отдельный Linux-дистрибутив не добавляется. Для Ubuntu выполните wsl --install -d Ubuntu в новом терминале.'
     }
 }
 
@@ -670,6 +779,7 @@ function Get-MenuStatuses {
         }
         $text = 'Не установлено'
         if (Test-AppInstalled $app) { $text = 'Установлено' }
+        elseif ($app.Key -eq 'wsl') { $text = 'Требуется установка / настройка' }
         elseif ($app.Kind -eq 'manual') { $text = 'Скачать и установить вручную' }
         if ($null -ne (Get-CachedDownload $app)) { $text += ' / Скачано' }
         $statuses[$app.Key] = $text

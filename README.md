@@ -50,7 +50,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
     [ ] Telegram Desktop     Не установлено
     [ ] VS Code              Не установлено
     [ ] Python 3.13          Не установлено
+    [ ] uv                   Не установлено
+    [ ] Poetry               Не установлено
     [ ] Node.js LTS          Не установлено
+    [ ] WSL 2                Требуется установка / настройка
+    [ ] Docker Desktop       Не установлено
     [ ] Codex CLI            Не установлено
     [ ] Codex (интерфейс)    Не установлено
     [ ] Claude Code CLI      Не установлено
@@ -100,7 +104,7 @@ Node.js. Уже установленные CLI пропускаются неза
 Для Codex и Claude предусмотрены отдельные отметки «CLI» и «интерфейс».
 Можно установить любой вариант или оба одновременно. «Установить всё» включает
 оба варианта каждого инструмента, GitHub CLI, PowerToys, WinRAR, Google Chrome,
-Telegram Desktop и Steam.
+Telegram Desktop, Steam, WSL 2, Docker Desktop, uv и Poetry.
 Для AmneziaVPN открывается официальный сайт для ручной установки.
 
 | Вариант | Ключ для `-Apps` | Способ установки |
@@ -115,6 +119,10 @@ Telegram Desktop и Steam.
 | Google Chrome | `chrome` | WinGet: `Google.Chrome` |
 | Telegram Desktop | `telegram` | WinGet: `Telegram.TelegramDesktop` |
 | Steam | `steam` | WinGet: `Valve.Steam` |
+| WSL 2 | `wsl` | `wsl --install --no-distribution --web-download` |
+| Docker Desktop | `docker` | WinGet: `Docker.DockerDesktop`, движок WSL 2 |
+| uv | `uv` | WinGet: `astral-sh.uv` |
+| Poetry | `poetry` | `uv tool install --python 3.13 poetry` |
 
 Приложения не требуют установки отдельного CLI и не добавляют Node.js/npm
 в план. Их наличие проверяется отдельно от CLI. Старые команды с ключами
@@ -161,6 +169,12 @@ Codex/ChatGPT в меню «Пуск» и войдите в аккаунт.
 # WinRAR
 .\setup.ps1 -Apps winrar
 
+# WSL 2 и Docker Desktop (Docker автоматически добавляет WSL при необходимости)
+.\setup.ps1 -Apps wsl,docker
+
+# uv и Poetry (Poetry автоматически добавляет uv при необходимости)
+.\setup.ps1 -Apps uv,poetry
+
 # Скачать выбранные программы
 .\setup.ps1 -Apps gh,chrome,obsidian -Download
 
@@ -180,6 +194,8 @@ Codex/ChatGPT в меню «Пуск» и войдите в аккаунт.
 успехе, 1 при ошибке или заблокированной зависимости, 2 если требуется ручное
 действие (AmneziaVPN, драйвер NVIDIA, отдельное скачивание приложения Microsoft Store
 или неподдерживаемая Windows для терминала по умолчанию).
+Код 2 также возвращается, если WSL требует завершения настройки или выбран
+неподдерживаемый режим отдельного скачивания Poetry.
 WinGet принимает лицензии
 выбранных программ, чтобы не запрашивать их в ходе каждой установки; UAC и
 особенности стороннего установщика могут потребовать участия пользователя.
@@ -199,6 +215,71 @@ WinGet принимает лицензии
 ручного запуска или переноса; они не используются автоматически при установке.**
 Это значит, что после `-Download` установка через WinGet может скачать пакет ещё раз.
 Офлайн-установка и скачивание всех зависимостей в этой версии не реализованы.
+
+### uv и Poetry
+
+Пункты `uv` и `poetry` доступны отдельно и входят в «Установить всё».
+uv устанавливается через официальный пакет WinGet `astral-sh.uv`;
+дополнительный Python для самого uv не требуется.
+Способ установки описан в [документации Astral](https://docs.astral.sh/uv/getting-started/installation/).
+
+Выбор Poetry автоматически добавляет uv в план перед Poetry. Poetry
+устанавливается командой `uv tool install --python 3.13 poetry` в отдельное
+окружение. uv использует подходящий Python 3.13 или скачивает его при
+необходимости; пункт `python` из каталога выбирать для этого не обязательно.
+Команда `uv tool update-shell` добавляет каталог исполняемых файлов инструментов
+в PATH пользователя, после чего установщик проверяет `poetry --version`.
+Изоляция инструментов и настройка PATH описаны в [документации uv](https://docs.astral.sh/uv/guides/tools/),
+скачивание интерпретатора — в [документации версий Python](https://docs.astral.sh/uv/concepts/python-versions/).
+
+Уже установленные uv и Poetry пропускаются. Poetry, установленный другим
+способом и доступный в PATH, также пропускается без новой установки uv.
+Ошибка установки uv блокирует Poetry, независимые программы продолжаются.
+Для обновления Poetry, установленного этим скриптом, используйте
+`uv tool upgrade poetry`; обновление uv выполняется через WinGet.
+
+`-Download` сохраняет пакет uv через WinGet. Отдельное скачивание Poetry
+не поддерживается: возвращаются статус `Manual` и код 2 с предложением выбрать
+установку. Другие выбранные загрузки продолжаются. Квитанция «Скачано» для Poetry
+не создаётся. `-DryRun` показывает этот порядок и ограничения, без установки,
+скачивания Python или изменения PATH.
+
+### WSL 2 и Docker Desktop
+
+Пункты `wsl` и `docker` доступны отдельно и входят в «Установить всё».
+Выбор Docker Desktop добавляет WSL в план перед Docker, если Docker ещё не
+установлен. Готовый WSL пропускается; ошибки подготовки WSL блокируют только
+Docker, независимые программы продолжают устанавливаться.
+
+WSL устанавливается штатной командой Microsoft с `--no-distribution`: отдельный
+Linux-дистрибутив не добавляется. Включение компонентов Windows выполняется
+с запросом UAC. Старый WSL при необходимости обновляется через
+`wsl --update --web-download`. Готовность проверяется по пакету MSI/MSIX, версии WSL не ниже
+2.1.5, службе `vmcompute`, активному гипервизору и результату `wsl --status`.
+Один встроенный в Windows `wsl.exe` не считается установленным WSL.
+Параметры команд описаны в [документации Microsoft](https://learn.microsoft.com/en-us/windows/wsl/basic-commands),
+минимальная версия — в [требованиях Docker](https://docs.docker.com/desktop/features/wsl/).
+
+Если компоненты ещё не готовы или установщик сообщает о перезагрузке, WSL
+получает `Manual`, установка Docker откладывается и автоматический режим
+возвращает код 2. Перезагрузите Windows, убедитесь, что виртуализация включена
+в BIOS/UEFI, и повторите `.\setup.ps1 -Apps wsl,docker`. Скрипт не перезагружает
+компьютер сам.
+
+Docker Desktop устанавливается через WinGet с `--backend=wsl-2`. Его наличие
+определяется по записи `Docker Desktop` в установленных приложениях Windows;
+отдельные Docker CLI и Compose не заменяют Desktop. После установки откройте
+Docker Desktop из меню «Пуск», дождитесь запуска движка и выполните
+`docker run --rm hello-world`. Отдельный дистрибутив для команд Docker из Windows
+не требуется; для работы в Linux можно установить Ubuntu командой
+`wsl --install -d Ubuntu` и включить его в Settings → Resources → WSL Integration.
+Это поведение описано в [документации Docker для WSL 2](https://docs.docker.com/desktop/features/wsl/).
+
+`-Download` для `wsl` сохраняет пакет `Microsoft.WSL` через WinGet, для `docker` —
+установщик Docker Desktop. Скачивание не включает компоненты Windows и не
+запускает повышение прав для WSL; установка WSL выполняется штатной командой.
+`-Apps docker -Download` получает только Docker, без зависимости WSL.
+`-DryRun` показывает план и не запускает установщики или запрос UAC.
 
 ### AmneziaVPN
 
@@ -293,7 +374,11 @@ claude --version
 | Telegram Desktop | `winget install -e --id Telegram.TelegramDesktop --source winget` | `winget upgrade -e --id Telegram.TelegramDesktop --source winget` |
 | VS Code | `winget install -e --id Microsoft.VisualStudioCode --source winget` | `winget upgrade -e --id Microsoft.VisualStudioCode --source winget` |
 | Python 3.13 | `winget install -e --id Python.Python.3.13 --source winget` | `winget upgrade -e --id Python.Python.3.13 --source winget` |
+| uv | `winget install -e --id astral-sh.uv --source winget` | `winget upgrade -e --id astral-sh.uv --source winget` |
+| Poetry | `.\setup.ps1 -Apps poetry` | `uv tool upgrade poetry` (для установки через uv) |
 | Node.js LTS | `winget install -e --id OpenJS.NodeJS.LTS --source winget` | `winget upgrade -e --id OpenJS.NodeJS.LTS --source winget` |
+| WSL 2 | `.\setup.ps1 -Apps wsl` | `wsl --update --web-download` (терминал администратора) |
+| Docker Desktop | `.\setup.ps1 -Apps docker` | `winget upgrade -e --id Docker.DockerDesktop --source winget` |
 | Codex CLI | `npm install -g @openai/codex@latest` | `npm install -g @openai/codex@latest` |
 | Codex (интерфейс) | `winget install -e --id 9PLM9XGG6VKS --source msstore` | `winget upgrade -e --id 9PLM9XGG6VKS --source msstore` |
 | Claude Code CLI | `npm install -g @anthropic-ai/claude-code@latest` | `npm install -g @anthropic-ai/claude-code@latest` |
@@ -319,6 +404,13 @@ Python выбран явно в ветке 3.13, чтобы устанавлив
 - [Манифесты WinRAR](https://github.com/microsoft/winget-pkgs/tree/master/manifests/r/RARLab/WinRAR)
 - [Манифесты Google Chrome](https://github.com/microsoft/winget-pkgs/tree/master/manifests/g/Google/Chrome)
 - [Манифесты Telegram Desktop](https://github.com/microsoft/winget-pkgs/tree/master/manifests/t/Telegram/TelegramDesktop)
+- [Microsoft: команды WSL](https://learn.microsoft.com/en-us/windows/wsl/basic-commands)
+- [Манифесты WSL](https://github.com/microsoft/winget-pkgs/tree/master/manifests/m/Microsoft/WSL)
+- [Docker Desktop: установка в Windows](https://docs.docker.com/desktop/setup/install/windows-install/)
+- [Манифесты Docker Desktop](https://github.com/microsoft/winget-pkgs/tree/master/manifests/d/Docker/DockerDesktop)
+- [uv: установка](https://docs.astral.sh/uv/getting-started/installation/)
+- [uv: отдельные окружения инструментов](https://docs.astral.sh/uv/guides/tools/)
+- [Poetry: установка и требования](https://python-poetry.org/docs/#installation)
 - [WinGet: установка](https://learn.microsoft.com/en-us/windows/package-manager/winget/install)
 - [WinGet: скачивание](https://learn.microsoft.com/en-us/windows/package-manager/winget/download)
 - [Microsoft: восстановление WinGet](https://learn.microsoft.com/en-us/windows/package-manager/winget/troubleshooting)
@@ -345,6 +437,8 @@ Python выбран явно в ветке 3.13, чтобы устанавлив
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\setup.tests.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\wsl-docker.tests.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\uv-poetry.tests.ps1
 ```
 
 Проверено 1 октября 2026 года: 98 локальных проверок прошли в Windows PowerShell
@@ -369,6 +463,20 @@ Codex, пакеты Claude Desktop и Steam, поведение `-Download` дл
 PowerShell 5.1 и PowerShell 7. Проверены GitHub CLI, совместный выбор с Chrome,
 ручная установка Amnezia, пропуск установленной Amnezia, игнорирование старого
 кэша WinGet и продолжение других операций при ошибке открытия сайта.
+
+Проверено 7 октября 2026 года: 138 прежних и 41 проверка WSL/Docker прошли в
+Windows PowerShell 5.1 и PowerShell 7. Проверены зависимость Docker от WSL,
+повторный запуск, версия и готовность WSL, запрос повышения прав с подменённым
+запуском процесса, код перезагрузки 3010, код завершения 2 и продолжение
+независимых установок. `-List` и `-Apps wsl,docker -DryRun` проверены с настоящими
+статусами. Реальная установка WSL/Docker и запуск контейнера не выполнялись.
+
+Проверено 9 октября 2026 года: 138 общих, 41 проверка WSL/Docker и 30 проверок
+uv/Poetry прошли в Windows PowerShell 5.1 и PowerShell 7. Проверены порядок
+зависимостей, повторный запуск, независимое обнаружение команд, проверка
+результата установки, обработка ошибок и режима отдельного скачивания Poetry.
+`-Apps uv,poetry -DryRun` и `-List` проверены с настоящими статусами.
+Установка uv/Poetry и изменение пользовательского PATH в тестах подменены.
 
 Проверка реального скачивания/установки на чистой Windows, восстановления WinGet,
 подбора драйвера в браузере и запросов UAC пока не выполнена. Скрипт и тесты сохранены в UTF-8 с BOM для

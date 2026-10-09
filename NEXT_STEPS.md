@@ -1,7 +1,8 @@
 # Следующие шаги
 
-Обновлено 5 октября 2026 года. В каталоге есть Windows Terminal, PowerShell 7
-Preview, PowerToys, WinRAR, Google Chrome, GitHub CLI и Telegram Desktop. AmneziaVPN
+Обновлено 9 октября 2026 года. В каталоге есть Windows Terminal, PowerShell 7
+Preview, PowerToys, WinRAR, Google Chrome, GitHub CLI, Telegram Desktop, WSL 2
+Docker Desktop, uv и Poetry. AmneziaVPN
 переведена с WinGet на ручное скачивание и установку с официального сайта.
 
 ## Git и GitHub CLI
@@ -11,6 +12,13 @@ Git (`Git.Git`) и GitHub CLI (`gh`, пакет WinGet `GitHub.cli`) уже ес
 `gh.exe` в PATH или записи установленного приложения Windows.
 GitHub CLI можно выбрать отдельно; установка не добавляет зависимостей.
 Вход в GitHub выполняет пользователь командой `gh auth login`.
+
+## uv и Poetry
+
+uv (`uv`) и Poetry (`poetry`) доступны в каталоге. Poetry устанавливается
+через uv в отдельное окружение Python 3.13. Подходящий интерпретатор uv находит
+или скачивает самостоятельно; команда Poetry добавляется в PATH пользователя.
+Уже доступный Poetry пропускается независимо от способа установки.
 
 ## Claude Code: frontend-design
 
@@ -53,10 +61,16 @@ Windows Terminal по умолчанию и отдельный стартовы�
 
 ## zsh и удобства — следующий этап
 
+WSL 2 (`wsl`) и Docker Desktop (`docker`) уже добавлены. Docker устанавливается
+с движком WSL 2 и автоматически добавляет WSL в план при необходимости.
+WSL устанавливается без отдельного дистрибутива; возможная перезагрузка
+откладывает Docker до повторного запуска. Реальная установка на чистой Windows
+и запуск контейнера остаются отдельной проверкой.
+
 Для Windows предлагается отдельный профиль **WSL + Ubuntu + zsh + Oh My Zsh**;
 основным профилем Windows остаётся PowerShell 7 Preview. Перед реализацией
 согласовать дистрибутив, тему, набор плагинов и работу с существующими `.zshrc`.
-WSL и zsh пока не устанавливаются.
+Ubuntu, zsh и Oh My Zsh пока не устанавливаются.
 
 Кандидаты для обсуждения: автоподсказки, подсветка синтаксиса, поиск истории
 через fzf и быстрые переходы по каталогам через zoxide. Для PowerShell отдельно
