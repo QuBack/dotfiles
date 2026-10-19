@@ -1,8 +1,9 @@
 # Рабочий компьютер за один запуск
 
-Консольный установщик программ с меню на русском языке. Текущая версия — для
-Windows 10/11, Windows PowerShell 5.1 или PowerShell 7. Python, Node.js и модули
-для интерфейса не нужны для запуска самого установщика.
+Консольный установщик программ с меню на русском языке: `setup.ps1` для
+Windows 10/11 (Windows PowerShell 5.1 или PowerShell 7) и `setup.sh` для macOS
+(раздел [macOS](#macos)). Python, Node.js и модули для интерфейса не нужны
+для запуска самого установщика.
 
 ## Запуск
 
@@ -424,11 +425,63 @@ Python выбран явно в ветке 3.13, чтобы устанавлив
 - [Манифесты VLC](https://github.com/microsoft/winget-pkgs/tree/master/manifests/v/VideoLAN/VLC)
 - [Официальные драйверы NVIDIA](https://www.nvidia.com/en-us/drivers/)
 
-## macOS и Linux
+## macOS
 
-В этой первой версии реализована Windows. Следующие отдельные скрипты смогут
-использовать Homebrew для macOS и пакетный менеджер выбранного дистрибутива Linux.
-Версии macOS/архитектуру и дистрибутив Linux нужно определить перед реализацией.
+`setup.sh` — отдельный установщик для macOS (Intel и Apple Silicon) с тем же
+меню, стрелками и отметками. Нужен только системный bash 3.2. Запуск:
+
+```bash
+bash setup.sh                         # меню
+bash setup.sh --list                  # статусы программ
+bash setup.sh --all --dry-run         # план без установки
+bash setup.sh --apps uv,poetry,vscode # только нужное
+```
+
+В Finder можно дважды нажать `start-macos.command`. Коды завершения те же, что
+у Windows: `1` — ошибка, `2` — нужен ручной шаг. Журнал пишется в
+`~/Library/Application Support/DotfilesSetup/logs`.
+
+Формулы Homebrew намеренно не используются. С сентября 2026 года macOS на Intel —
+[Tier 3](https://docs.brew.sh/Support-Tiers#tier-3) Homebrew: готовые бинарные
+пакеты (bottles) для неё не собираются, и `brew install <формула>` компилирует
+программу и все зависимости из исходников. Поэтому:
+
+| Что | Как устанавливается |
+| --- | --- |
+| Git | Command Line Tools Apple (`xcode-select --install`, системное окно) |
+| Приложения, Codex CLI, Claude Code CLI | `brew install --cask` — готовые сборки производителя |
+| GitHub CLI, Starship, fzf, bat, lsd | официальный релиз на GitHub, проверка SHA256 из GitHub API, `~/.local/bin` |
+| iTerm2, JetBrains Mono Nerd Font | `brew install --cask` |
+| Node.js LTS | официальный `.pkg` с nodejs.org, проверка SHA256, пароль администратора |
+| uv, Python 3.13, Poetry | официальный установщик uv; `uv python install`; `uv tool install` |
+
+### Терминал: iTerm2 + zsh
+
+- **`zsh`** — Oh My Zsh и плагины `zsh-autosuggestions`, `zsh-syntax-highlighting`
+  (через `git clone`, без установщика Oh My Zsh, который заменяет `~/.zshrc`),
+  плагины `git` и `fzf`, промпт Starship, алиасы `ls`/`ll`/`la`/`lt` → lsd и
+  `cat` → bat. Настройки лежат в `~/.config/dotfiles/zshrc.zsh` и обновляются
+  при каждом запуске; в `~/.zshrc` добавляется одна строка `source`, свои
+  настройки пишите в `~/.zshrc` после неё. Прежние версии файлов копируются в
+  `~/Library/Application Support/DotfilesSetup/backups`.
+- **`iterm-profile`** — динамический профиль iTerm2 «Dotfiles»: тема
+  Catppuccin Mocha, JetBrains Mono Nerd Font 14, левый Option как Esc+,
+  Option+←/→ — по словам, Cmd+←/→ — в начало/конец строки, Option/Cmd+Backspace —
+  удалить слово/строку. Свои профили iTerm2 не меняются. Если iTerm2 запущен,
+  сделайте профиль основным вручную: Settings → Profiles → Dotfiles →
+  Other Actions → Set as Default.
+- eza не используется: готовых сборок для macOS у неё нет, а на Intel Homebrew
+  собирал бы её из исходников. Вместо неё lsd.
+
+```bash
+bash setup.sh --apps zsh,iterm-profile,fzf,bat,lsd
+```
+
+Аналоги Windows-пунктов: WinRAR → The Unarchiver. Windows Terminal, PowerShell,
+PowerToys, WSL и драйверы NVIDIA для macOS не нужны. Режима отдельного
+скачивания (`-Download`) в macOS-версии нет.
+
+Тесты без установки программ: `bash tests/setup-macos.tests.sh`.
 
 ## Проверки
 
